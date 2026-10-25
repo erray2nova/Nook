@@ -15,12 +15,47 @@
         KeyDown="Window_KeyDown">
 
     <Window.Resources>
-        <!-- Стиль плитки (немного обновили размеры и выравнивание под иконку + текст) -->
+        <!-- Стиль кнопок-вкладок сверху -->
+        <Style x:Key="CategoryTabStyle" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="#9A9AA2"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="FontSize" Value="16"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="6,0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="TabBorder"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="12"
+                                Padding="22,10"
+                                BorderBrush="Transparent"
+                                BorderThickness="1">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Foreground" Value="#FFFFFF"/>
+                                <Setter TargetName="TabBorder" Property="Background" Value="#22FFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter Property="Foreground" Value="#FFFFFF"/>
+                                <Setter TargetName="TabBorder" Property="Background" Value="#3A7AFE"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+
+        <!-- Стиль плитки приложения -->
         <Style x:Key="TileButtonStyle" TargetType="Button">
             <Setter Property="Width" Value="150"/>
             <Setter Property="Height" Value="150"/>
             <Setter Property="Margin" Value="14"/>
-            <Setter Property="Background" Value="#252528"/>
+            <Setter Property="Background" Value="#88222226"/>
             <Setter Property="Foreground" Value="#FFFFFF"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
@@ -29,18 +64,25 @@
                         <Border x:Name="TileBorder"
                                 Background="{TemplateBinding Background}"
                                 CornerRadius="22"
-                                BorderBrush="#3E3E42"
-                                BorderThickness="2"
-                                Padding="12">
+                                BorderBrush="#35FFFFFF"
+                                BorderThickness="1.5"
+                                Padding="12"
+                                RenderTransformOrigin="0.5,0.5">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="TileBorder" Property="Background" Value="#323236"/>
-                                <Setter TargetName="TileBorder" Property="BorderBrush" Value="#686870"/>
+                                <Setter TargetName="TileBorder" Property="Background" Value="#AA303036"/>
+                                <Setter TargetName="TileBorder" Property="BorderBrush" Value="#75FFFFFF"/>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="TileBorder" Property="Background" Value="#1B1B1D"/>
+                                <Setter TargetName="TileBorder" Property="Background" Value="#CC18181C"/>
+                                <!-- Обращаемся напрямую к существующему визуальному элементу TileBorder -->
+                                <Setter TargetName="TileBorder" Property="RenderTransform">
+                                    <Setter.Value>
+                                        <ScaleTransform ScaleX="0.96" ScaleY="0.96"/>
+                                    </Setter.Value>
+                                </Setter>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -50,7 +92,7 @@
     </Window.Resources>
 
     <Grid>
-        <!-- Иконка в системном трее -->
+        <!-- Системный трей с переключателем автозапуска -->
         <tb:TaskbarIcon x:Name="TrayIcon"
                         ToolTipText="FastPush (Ctrl + Alt + Space)"
                         TrayMouseDoubleClick="TrayIcon_DoubleClick">
@@ -59,62 +101,118 @@
                     <MenuItem Header="Показать / Скрыть" Click="MenuOpen_Click"/>
                     <MenuItem Header="Перезагрузить конфиг" Click="MenuReload_Click"/>
                     <Separator/>
+                    <MenuItem x:Name="AutoStartMenuItem"
+                              Header="Запускать вместе с Windows"
+                              IsCheckable="True"
+                              Click="AutoStartMenuItem_Click"/>
+                    <Separator/>
                     <MenuItem Header="Выход" Click="MenuExit_Click"/>
                 </ContextMenu>
             </tb:TaskbarIcon.ContextMenu>
         </tb:TaskbarIcon>
 
-        <!-- Фон оверлея -->
-        <Border Background="#D9121214" CornerRadius="16" Padding="40">
-            
-            <!-- ItemsControl автоматически генерирует кнопки на основе списка из кода -->
-            <ItemsControl x:Name="TilesContainer" HorizontalAlignment="Center" VerticalAlignment="Center">
-                
-                <!-- Панель расположения: WrapPanel переносит плитки на новый ряд, если их больше 5 -->
-                <ItemsControl.ItemsPanel>
-                    <ItemsPanelTemplate>
-                        <WrapPanel MaxWidth="920" HorizontalAlignment="Center"/>
-                    </ItemsPanelTemplate>
-                </ItemsControl.ItemsPanel>
+        <!-- Основной слой оверлея (#01000000 перехватывает клики и Drag&Drop на прозрачном фоне Acrylic) -->
+        <Border x:Name="OverlayBorder"
+                Background="#22101014"
+                BorderBrush="#28FFFFFF"
+                BorderThickness="1"
+                Padding="40,28,40,36"
+                AllowDrop="True"
+                DragEnter="Overlay_DragEnter"
+                DragLeave="Overlay_DragLeave"
+                Drop="Overlay_Drop">
 
-                <!-- Шаблон одной плитки -->
-                <ItemsControl.ItemTemplate>
-                    <DataTemplate>
-                        <Button Style="{StaticResource TileButtonStyle}"
-                                Tag="{Binding Path}"
-                                Click="Tile_Click">
-                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                                <!-- Иконка приложения (RenderOptions улучшает четкость мелких значков) -->
-                                <Image Source="{Binding IconSource}"
-                                       Width="56" 
-                                       Height="56"
-                                       Margin="0,0,0,12"
-                                       RenderOptions.BitmapScalingMode="HighQuality">
-                                    <!-- Если иконки нет (например, это папка без своей иконки), прячем пустой блок Image, чтобы текст встал ровно по центру -->
-                                    <Image.Style>
-                                        <Style TargetType="Image">
-                                            <Style.Triggers>
-                                                <Trigger Property="Source" Value="{x:Null}">
-                                                    <Setter Property="Visibility" Value="Collapsed"/>
-                                                </Trigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </Image.Style>
-                                </Image>
+            <!-- Контейнер с трансформацией для плавной анимации открытия/закрытия -->
+            <Grid x:Name="RootContent" RenderTransformOrigin="0.5,0.5">
+                <Grid.RenderTransform>
+                    <ScaleTransform x:Name="OverlayScale" ScaleX="1" ScaleY="1"/>
+                </Grid.RenderTransform>
 
-                                <!-- Название плитки -->
-                                <TextBlock Text="{Binding Name}"
-                                           FontSize="15"
-                                           FontWeight="SemiBold"
-                                           TextAlignment="Center"
-                                           TextTrimming="CharacterEllipsis"
-                                           MaxWidth="120"/>
-                            </StackPanel>
-                        </Button>
-                    </DataTemplate>
-                </ItemsControl.ItemTemplate>
-            </ItemsControl>
-            
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- 1. ВЕРХНЯЯ ПАНЕЛЬ КАТЕГОРИЙ -->
+                <Border Grid.Row="0"
+                        Background="#5518181C"
+                        BorderBrush="#22FFFFFF"
+                        BorderThickness="1"
+                        CornerRadius="16"
+                        Padding="6"
+                        HorizontalAlignment="Center"
+                        Margin="0,0,0,24">
+                    <ItemsControl x:Name="CategoriesContainer">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Horizontal"/>
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                    </ItemsControl>
+                </Border>
+
+                <!-- 2. ЦЕНТРАЛЬНАЯ ЗОНА ПЛИТОК -->
+                <Grid Grid.Row="1">
+                    <TextBlock x:Name="EmptyHintText"
+                               Text="В этой категории пока пусто — перетащите сюда программы, файлы или папки"
+                               Foreground="#9595A0"
+                               FontSize="18"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Visibility="Collapsed"/>
+
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <ItemsControl x:Name="TilesContainer" HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel MaxWidth="920" HorizontalAlignment="Center"/>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Button Style="{StaticResource TileButtonStyle}"
+                                            Tag="{Binding}"
+                                            Click="Tile_Click">
+                                        
+                                        <Button.ContextMenu>
+                                            <ContextMenu>
+                                                <MenuItem Header="Переименовать" Click="RenameTile_Click"/>
+                                                <Separator/>
+                                                <MenuItem Header="Удалить" Click="DeleteTile_Click"/>
+                                            </ContextMenu>
+                                        </Button.ContextMenu>
+
+                                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                            <Image Source="{Binding IconSource}"
+                                                   Width="56" 
+                                                   Height="56"
+                                                   Margin="0,0,0,12"
+                                                   RenderOptions.BitmapScalingMode="HighQuality"/>
+
+                                            <TextBlock Text="{Binding Name}"
+                                                       FontSize="15"
+                                                       FontWeight="SemiBold"
+                                                       TextAlignment="Center"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       MaxWidth="120"/>
+                                        </StackPanel>
+                                    </Button>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Grid>
+
+                <!-- 3. НИЖНЯЯ ПОДСКАЗКА -->
+                <TextBlock Grid.Row="2"
+                           Text="Клавиши 1–3: смена вкладки  •  Drag &amp; Drop: добавить в текущую вкладку  •  Esc: скрыть"
+                           Foreground="#6E6E78"
+                           FontSize="13"
+                           HorizontalAlignment="Center"
+                           Margin="0,12,0,0"/>
+            </Grid>
         </Border>
     </Grid>
 </Window>
