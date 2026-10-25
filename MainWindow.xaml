@@ -1,12 +1,91 @@
 ﻿<Window x:Class="FastPush.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:local="clr-namespace:FastPush"
-        mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
-    <Grid>
+        Title="FastPush"
+        Width="1280" 
+        Height="720"
+        WindowStartupLocation="CenterScreen"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ResizeMode="NoResize"
+        Topmost="True"
+        KeyDown="Window_KeyDown">
+    <!-- 
+      Параметры окна выше:
+      Width / Height — жестко задаем размер 1280x720.
+      WindowStartupLocation="CenterScreen" — размещаем окно ровно по центру монитора.
+      WindowStyle="None" — убираем стандартную верхнюю шапку Windows и рамки.
+      AllowsTransparency="True" и Background="Transparent" — включаем поддержку прозрачности самого окна.
+      ResizeMode="NoResize" — запрещаем растягивать окно мышкой за края.
+      Topmost="True" — делаем окно поверх остальных (как настоящий оверлей).
+      KeyDown="Window_KeyDown" — подписываемся на нажатия клавиш для отслеживания Esc.
+    -->
 
-    </Grid>
+    <!-- Стили для плиток, чтобы не дублировать код для каждой кнопки -->
+    <Window.Resources>
+        <Style x:Key="TileButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="150"/>
+            <Setter Property="Height" Value="150"/>
+            <Setter Property="Margin" Value="15"/>
+            <Setter Property="Background" Value="#252528"/>
+            <Setter Property="Foreground" Value="#FFFFFF"/>
+            <Setter Property="FontSize" Value="18"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            
+            <!-- Переопределяем стандартный шаблон кнопки WPF, чтобы сделать скругленные углы и свой эффект наведения -->
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="TileBorder"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="20"
+                                BorderBrush="#3E3E42"
+                                BorderThickness="2">
+                            <!-- ContentPresenter выводит текст (Content), написанный внутри тега Button -->
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        
+                        <!-- Триггеры состояний (наведение и клик) -->
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="TileBorder" Property="Background" Value="#323236"/>
+                                <Setter TargetName="TileBorder" Property="BorderBrush" Value="#686870"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="TileBorder" Property="Background" Value="#1B1B1D"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <!-- Полупрозрачный темный фон оверлея (#D9 — это примерно 85% непрозрачности, 121214 — глубокий темный цвет) -->
+    <Border Background="#D9121214" CornerRadius="16">
+        
+        <!-- UniformGrid с 1 строкой и 3 колонками идеально выравнивает 3 плитки в ряд по центру -->
+        <UniformGrid Rows="1" Columns="3" HorizontalAlignment="Center" VerticalAlignment="Center">
+            
+            <!-- В свойство Tag удобно прятать путь к программе, чтобы использовать один общий метод клика -->
+            <Button Content="Блокнот" 
+                    Style="{StaticResource TileButtonStyle}"
+                    Tag="notepad.exe"
+                    Click="Tile_Click"/>
+
+            <Button Content="Калькулятор" 
+                    Style="{StaticResource TileButtonStyle}"
+                    Tag="calc.exe"
+                    Click="Tile_Click"/>
+
+            <!-- Пример с полным путем до проводника (можно заменить на любой свой .exe) -->
+            <Button Content="Проводник" 
+                    Style="{StaticResource TileButtonStyle}"
+                    Tag="C:\Windows\explorer.exe"
+                    Click="Tile_Click"/>
+                    
+        </UniformGrid>
+    </Border>
 </Window>
