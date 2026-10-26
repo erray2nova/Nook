@@ -611,7 +611,7 @@
     <Grid>
         <!-- Системный трей -->
         <tb:TaskbarIcon x:Name="TrayIcon"
-                        ToolTipText="Nook • Beta 4.1"
+                        ToolTipText="Nook • v1.0"
                         TrayMouseDoubleClick="TrayIcon_DoubleClick">
             <tb:TaskbarIcon.ContextMenu>
                 <ContextMenu>
@@ -780,7 +780,7 @@
                                            FontWeight="Bold"
                                            Margin="0,-2,0,0"/>
                                 <TextBlock x:Name="SubHeaderStatusText"
-                                           Text="beta 4.1"
+                                           Text="v1.0"
                                            Foreground="{DynamicResource SecondaryTextBrush}"
                                            FontSize="11.5"
                                            FontWeight="Medium"/>
@@ -1641,7 +1641,7 @@
                                             </Border>
                                             <StackPanel VerticalAlignment="Center">
                                                 <TextBlock Text="Nook Launcher" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="15" FontWeight="Bold"/>
-                                                <TextBlock Text="Beta 4.1 • Данные в %LocalAppData%\Nook" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11.5" Margin="0,2,0,0"/>
+                                                <TextBlock Text="Nook v1.0 • Данные хранятся в %LocalAppData%\Nook" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11.5" Margin="0,2,0,0"/>
                                             </StackPanel>
                                         </StackPanel>
                                     </Border>

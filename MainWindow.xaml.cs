@@ -403,7 +403,7 @@ namespace FastPush
             Application.Current.Resources["OrbSecondaryBrush"] = orb2;
 
             HeaderClockPanel.Visibility = _design.ShowClock ? Visibility.Visible : Visibility.Collapsed;
-            TrayIcon.ToolTipText = $"Nook • Beta 4.1 ({_design.HotkeyDisplay})";
+            TrayIcon.ToolTipText = $"Nook • v1.0 ({_design.HotkeyDisplay})";
 
             UpdateAcrylicBlur();
         }
@@ -835,7 +835,7 @@ namespace FastPush
             IsEditMode = enable;
             EditModeBtn.IsChecked = enable;
             EditModeBtn.Content = enable ? "✓ Готово" : "✎ Ред.";
-            SubHeaderStatusText.Text = enable ? "режим правки" : "beta 4.1";
+            SubHeaderStatusText.Text = enable ? "режим правки" : "v1.0";
 
             if (enable && _isDrawerOpen)
                 CloseSettingsDrawer();
@@ -1743,7 +1743,7 @@ namespace FastPush
             }
 
             RecordHotkeyButton.Content = display;
-            TrayIcon.ToolTipText = $"Nook • Beta 4.1 ({display})";
+            TrayIcon.ToolTipText = $"Nook • v1.0 ({display})";
             ManualHotkeyPanel.Visibility = Visibility.Collapsed;
             SaveConfiguration();
         }
@@ -1825,7 +1825,7 @@ namespace FastPush
 
             RegisterCurrentHotkey(showWarningOnFail: true);
             RecordHotkeyButton.Content = _design.HotkeyDisplay;
-            TrayIcon.ToolTipText = $"Nook • Beta 4.1 ({_design.HotkeyDisplay})";
+            TrayIcon.ToolTipText = $"Nook • v1.0 ({_design.HotkeyDisplay})";
             SaveConfiguration();
         }
 
@@ -1896,7 +1896,7 @@ namespace FastPush
             if (RegisterCurrentHotkey(showWarningOnFail: false))
             {
                 RecordHotkeyButton.Content = _design.HotkeyDisplay;
-                TrayIcon.ToolTipText = $"Nook • Beta 4.1 ({_design.HotkeyDisplay})";
+                TrayIcon.ToolTipText = $"Nook • v1.0 ({_design.HotkeyDisplay})";
                 SaveConfiguration();
             }
             else

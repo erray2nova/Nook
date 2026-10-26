@@ -7,7 +7,7 @@
 #endif
 
 #define AppName "Nook"
-#define AppVersion "4.1.0"
+#define AppVersion "1.0.0"
 #define AppPublisher "erray2nova"
 #define AppExeName "FastPush.exe"
 
@@ -15,7 +15,7 @@
 AppId={{B76E3CA6-7390-4A4E-A8B1-1E28B2CE0CF0}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppVerName={#AppName} Beta 4.1
+AppVerName={#AppName} v1.0
 AppPublisher={#AppPublisher}
 AppPublisherURL=https://github.com/erray2nova/FastPush
 AppSupportURL=https://github.com/erray2nova/FastPush/issues
@@ -23,8 +23,8 @@ AppUpdatesURL=https://github.com/erray2nova/FastPush/releases
 VersionInfoCompany=erray2nova
 VersionInfoDescription=Nook customizable desktop launcher
 VersionInfoProductName=Nook
-VersionInfoProductVersion=4.1.0.0
-VersionInfoVersion=4.1.0.0
+VersionInfoProductVersion=1.0.0.0
+VersionInfoVersion=1.0.0.0
 DefaultDirName={localappdata}\Programs\Nook
 DefaultGroupName=Nook
 DisableProgramGroupPage=yes
@@ -41,7 +41,7 @@ RestartApplications=no
 UsePreviousAppDir=yes
 UsePreviousGroup=yes
 OutputDir={#OutputDir}
-OutputBaseFilename=Nook-Setup-Beta-4.1-x64
+OutputBaseFilename=Nook-Setup-v1.0-x64
 Compression=lzma2/ultra64
 SolidCompression=yes
 SetupLogging=yes
