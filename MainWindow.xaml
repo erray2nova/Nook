@@ -104,21 +104,6 @@
                                 <Setter Property="Foreground" Value="{DynamicResource AccentForegroundBrush}"/>
                                 <Setter TargetName="TabBorder" Property="Background" Value="{DynamicResource AccentBrush}"/>
                             </Trigger>
-                            <DataTrigger Binding="{Binding IsEditMode, RelativeSource={RelativeSource AncestorType=Window}}" Value="True">
-                                <DataTrigger.EnterActions>
-                                    <BeginStoryboard Name="CatJiggleSb">
-                                        <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="TabRoot"
-                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
-                                                             From="-1.2" To="1.2" Duration="0:0:0.14"
-                                                             AutoReverse="True" RepeatBehavior="Forever"/>
-                                        </Storyboard>
-                                    </BeginStoryboard>
-                                </DataTrigger.EnterActions>
-                                <DataTrigger.ExitActions>
-                                    <RemoveStoryboard BeginStoryboardName="CatJiggleSb"/>
-                                </DataTrigger.ExitActions>
-                            </DataTrigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -429,9 +414,9 @@
 
         <!-- Плитка приложения (hover-свечение + iPhone-покачивание в режиме редактирования) -->
         <Style x:Key="TileButtonStyle" TargetType="Button">
-            <Setter Property="Width" Value="138"/>
-            <Setter Property="Height" Value="138"/>
-            <Setter Property="Margin" Value="12"/>
+            <Setter Property="Width" Value="150"/>
+            <Setter Property="Height" Value="150"/>
+            <Setter Property="Margin" Value="14"/>
             <Setter Property="Background" Value="{DynamicResource TileSurfaceBrush}"/>
             <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}"/>
             <Setter Property="Cursor" Value="Hand"/>
@@ -528,11 +513,7 @@
                                         <Storyboard>
                                             <DoubleAnimation Storyboard.TargetName="TileRoot"
                                                              Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[2].(RotateTransform.Angle)"
-                                                             From="-1.9" To="1.9" Duration="0:0:0.13"
-                                                             AutoReverse="True" RepeatBehavior="Forever"/>
-                                            <DoubleAnimation Storyboard.TargetName="TileRoot"
-                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(TranslateTransform.X)"
-                                                             From="-0.9" To="0.9" Duration="0:0:0.17"
+                                                             From="-1.15" To="1.15" Duration="0:0:0.22"
                                                              AutoReverse="True" RepeatBehavior="Forever"/>
                                         </Storyboard>
                                     </BeginStoryboard>
@@ -560,7 +541,7 @@
     <Grid>
         <!-- Системный трей -->
         <tb:TaskbarIcon x:Name="TrayIcon"
-                        ToolTipText="Nook • Beta 0.1"
+                        ToolTipText="Nook • Beta 0.3"
                         TrayMouseDoubleClick="TrayIcon_DoubleClick">
             <tb:TaskbarIcon.ContextMenu>
                 <ContextMenu>
@@ -665,6 +646,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
                     <!-- ВЕРХНИЙ БАР -->
@@ -675,7 +657,7 @@
                             <ColumnDefinition Width="260"/>
                         </Grid.ColumnDefinitions>
 
-                        <!-- Слева: Логотип, Название и beta 0.1 -->
+                        <!-- Слева: Логотип, Название и beta 0.3 -->
                         <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                             <Border Width="38"
                                     Height="38"
@@ -697,7 +679,7 @@
                                            FontWeight="Bold"
                                            Margin="0,-2,0,0"/>
                                 <TextBlock x:Name="SubHeaderStatusText"
-                                           Text="beta 0.1"
+                                           Text="beta 0.3"
                                            Foreground="{DynamicResource SecondaryTextBrush}"
                                            FontSize="11.5"
                                            FontWeight="Medium"/>
@@ -801,28 +783,27 @@
                         </Grid.ContextMenu>
 
                         <!-- Сетка плиток -->
-                        <ScrollViewer x:Name="TilesScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                            <ItemsControl x:Name="TilesContainer" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <ScrollViewer x:Name="TilesScrollViewer"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled">
+                            <ItemsControl x:Name="TilesContainer" HorizontalAlignment="Stretch" VerticalAlignment="Center">
                                 <ItemsControl.ItemsPanel>
                                     <ItemsPanelTemplate>
-                                        <WrapPanel MaxWidth="980" HorizontalAlignment="Center"/>
+                                        <WrapPanel MaxWidth="1140" HorizontalAlignment="Center"/>
                                     </ItemsPanelTemplate>
                                 </ItemsControl.ItemsPanel>
 
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <Button Style="{StaticResource TileButtonStyle}"
+                                        <Button x:Name="TileButton"
+                                                Style="{StaticResource TileButtonStyle}"
                                                 Tag="{Binding}"
                                                 ToolTip="{Binding Path}"
-                                                AllowDrop="True"
                                                 Click="Tile_Click"
                                                 PreviewMouseLeftButtonDown="Tile_PreviewMouseLeftButtonDown"
                                                 PreviewMouseMove="Tile_PreviewMouseMove"
                                                 PreviewMouseLeftButtonUp="Tile_PreviewMouseLeftButtonUp"
-                                                DragEnter="Tile_DragEnter"
-                                                DragOver="Tile_DragOver"
-                                                DragLeave="Tile_DragLeave"
-                                                Drop="Tile_Drop">
+                                                LostMouseCapture="Tile_LostMouseCapture">
 
                                             <Button.ContextMenu>
                                                 <ContextMenu>
@@ -945,6 +926,33 @@
                             </StackPanel>
                         </Border>
                     </Grid>
+
+                    <Border Grid.Row="2"
+                            Width="360"
+                            HorizontalAlignment="Center"
+                            Background="{DynamicResource HeaderSurfaceBrush}"
+                            BorderBrush="{DynamicResource BorderSubtleBrush}"
+                            BorderThickness="1"
+                            CornerRadius="12"
+                            Padding="12,5"
+                            Margin="0,10,0,0">
+                        <DockPanel LastChildFill="True">
+                            <TextBlock Text="⌕"
+                                       Foreground="{DynamicResource SecondaryTextBrush}"
+                                       FontSize="20"
+                                       VerticalAlignment="Center"
+                                       Margin="0,0,9,2"/>
+                            <TextBox x:Name="TileSearchTextBox"
+                                     Background="Transparent"
+                                     BorderThickness="0"
+                                     Foreground="{DynamicResource PrimaryTextBrush}"
+                                     CaretBrush="{DynamicResource AccentBrush}"
+                                     FontSize="13"
+                                     VerticalContentAlignment="Center"
+                                     ToolTip="Поиск плиток в выбранной категории"
+                                     TextChanged="TileSearch_TextChanged"/>
+                        </DockPanel>
+                    </Border>
                 </Grid>
 
                 <!-- ЗАТЕМНЕНИЕ ПОД ПАНЕЛЬЮ НАСТРОЕК -->
@@ -1223,7 +1231,7 @@
                                             </Border>
                                             <StackPanel VerticalAlignment="Center">
                                                 <TextBlock Text="Nook Launcher" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="15" FontWeight="Bold"/>
-                                                <TextBlock Text="Beta 0.1 • Данные в %LocalAppData%\Nook" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11.5" Margin="0,2,0,0"/>
+                                                <TextBlock Text="Beta 0.3 • Данные в %LocalAppData%\Nook" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11.5" Margin="0,2,0,0"/>
                                             </StackPanel>
                                         </StackPanel>
                                     </Border>

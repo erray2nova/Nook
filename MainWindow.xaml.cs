@@ -12,6 +12,7 @@ using System.Text.Json;
 using System.Text.Unicode;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -106,7 +107,6 @@ namespace FastPush
         // --- СОСТОЯНИЕ И ПУТИ (%LocalAppData%\Nook) ---
         private const string RUN_REGISTRY_KEY = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private const string APP_REGISTRY_NAME = "Nook";
-        private const string DRAG_TILE_FORMAT = "NookInternalTileDrag";
         private const string DRAG_CATEGORY_FORMAT = "NookInternalCategoryDrag";
 
         private readonly string _dataDir;
@@ -124,9 +124,12 @@ namespace FastPush
 
         // Перетаскивание плиток и вкладок
         private Point _tileDragStartPoint;
+        private Point _tileDragPointerOffset;
+        private Point _tileLayoutPosition;
         private TileViewModel? _potentialDraggedTile;
+        private Button? _draggedTileButton;
+        private bool _isTileDragging;
         private bool _isInternalDragging = false;
-        private DateTime _lastTileSwapUtc = DateTime.MinValue;
 
         private Point _catDragStartPoint;
         private string? _potentialDraggedCategory;
@@ -339,7 +342,7 @@ namespace FastPush
             Application.Current.Resources["OrbSecondaryBrush"] = orb2;
 
             HeaderClockPanel.Visibility = _design.ShowClock ? Visibility.Visible : Visibility.Collapsed;
-            TrayIcon.ToolTipText = $"Nook • Beta 0.1 ({_design.HotkeyDisplay})";
+            TrayIcon.ToolTipText = $"Nook • Beta 0.3 ({_design.HotkeyDisplay})";
 
             UpdateAcrylicBlur();
         }
@@ -562,7 +565,7 @@ namespace FastPush
             IsEditMode = enable;
             EditModeBtn.IsChecked = enable;
             EditModeBtn.Content = enable ? "✓ Готово" : "✎ Ред.";
-            SubHeaderStatusText.Text = enable ? "режим правки" : "beta 0.1";
+            SubHeaderStatusText.Text = enable ? "режим правки" : "beta 0.3";
 
             if (enable && _isDrawerOpen)
                 CloseSettingsDrawer();
@@ -599,111 +602,212 @@ namespace FastPush
             if (IsClickInsideTaggedButton(e.OriginalSource as DependencyObject, tileBtn, "QuickDeleteBtn"))
                 return;
 
-            _tileDragStartPoint = e.GetPosition(this);
+            _tileDragStartPoint = e.GetPosition(TilesScrollViewer);
+            _tileDragPointerOffset = e.GetPosition(tileBtn);
             _potentialDraggedTile = tile;
         }
 
         private void Tile_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
         {
+            if (_isTileDragging && sender is Button tileButton)
+            {
+                Point dropPoint = e.GetPosition(TilesScrollViewer);
+                Point windowPoint = e.GetPosition(this);
+                TileViewModel? draggedTile = _potentialDraggedTile;
+
+                try
+                {
+                    UpdateTileDrag(dropPoint);
+                    tileButton.ReleaseMouseCapture();
+                    ResetTileDrag(tileButton);
+
+                    MoveTileToCategoryAtPoint(draggedTile, windowPoint);
+
+                    SaveConfiguration();
+                }
+                finally
+                {
+                    tileButton.ReleaseMouseCapture();
+                    if (_isTileDragging)
+                        ResetTileDrag(tileButton);
+                }
+
+                e.Handled = true;
+                return;
+            }
+
             _potentialDraggedTile = null;
         }
 
         private void Tile_PreviewMouseMove(object sender, MouseEventArgs e)
         {
+            if (sender is not Button tileButton)
+                return;
+
+            if (_isTileDragging)
+            {
+                Point pointer = e.GetPosition(TilesScrollViewer);
+                UpdateTileDrag(pointer);
+                e.Handled = true;
+                return;
+            }
+
             if (!IsEditMode || _isInternalDragging || _potentialDraggedTile == null || e.LeftButton != MouseButtonState.Pressed)
                 return;
 
-            Point pos = e.GetPosition(this);
+            Point pos = e.GetPosition(TilesScrollViewer);
             if (Math.Abs(pos.X - _tileDragStartPoint.X) > 6 || Math.Abs(pos.Y - _tileDragStartPoint.Y) > 6)
             {
-                TileViewModel dragged = _potentialDraggedTile;
+                if (!tileButton.CaptureMouse()) return;
+
                 _isInternalDragging = true;
+                _isTileDragging = true;
                 _suppressDeactivateHide = true;
-
-                try
-                {
-                    var data = new DataObject(DRAG_TILE_FORMAT, dragged);
-                    // Источником выступает TilesContainer, чтобы живая перестановка карточек внутри WrapPanel не срывала захват
-                    DragDrop.DoDragDrop(TilesContainer, data, DragDropEffects.Move);
-                    SaveConfiguration();
-                }
-                finally
-                {
-                    _potentialDraggedTile = null;
-                    _isInternalDragging = false;
-                    _suppressDeactivateHide = false;
-                }
-            }
-        }
-
-        private void Tile_DragEnter(object sender, DragEventArgs e)
-        {
-            if (e.Data.GetDataPresent(DRAG_TILE_FORMAT))
-            {
-                e.Effects = DragDropEffects.Move;
+                _draggedTileButton = tileButton;
+                _tileLayoutPosition = tileButton.TranslatePoint(new Point(0, 0), TilesScrollViewer);
+                Panel.SetZIndex(tileButton, 10);
+                tileButton.Cursor = Cursors.SizeAll;
                 e.Handled = true;
             }
         }
 
-        private void Tile_DragOver(object sender, DragEventArgs e)
+        private void Tile_LostMouseCapture(object sender, MouseEventArgs e)
         {
-            if (!e.Data.GetDataPresent(DRAG_TILE_FORMAT)) return;
+            if (_isTileDragging && sender is Button tileButton)
+                ResetTileDrag(tileButton);
+        }
 
-            e.Effects = DragDropEffects.Move;
-            e.Handled = true;
+        private void UpdateTileDrag(Point pointer)
+        {
+            if (_draggedTileButton == null) return;
 
-            if ((DateTime.UtcNow - _lastTileSwapUtc).TotalMilliseconds < 150) return;
+            Point targetPosition = new(
+                pointer.X - _tileDragPointerOffset.X,
+                pointer.Y - _tileDragPointerOffset.Y);
+            MoveTileToDropPosition(new Point(
+                targetPosition.X + _draggedTileButton.ActualWidth / 2,
+                targetPosition.Y + _draggedTileButton.ActualHeight / 2));
 
-            if (e.Data.GetData(DRAG_TILE_FORMAT) is not TileViewModel draggedTile ||
-                sender is not Button targetBtn ||
-                targetBtn.Tag is not TileViewModel targetTile ||
-                ReferenceEquals(draggedTile, targetTile))
-            {
+            _draggedTileButton.RenderTransform = new TranslateTransform(
+                targetPosition.X - _tileLayoutPosition.X,
+                targetPosition.Y - _tileLayoutPosition.Y);
+        }
+
+        private void ResetTileDrag(Button tileButton)
+        {
+            tileButton.RenderTransform = Transform.Identity;
+            tileButton.RenderTransformOrigin = new Point(0.5, 0.5);
+            tileButton.Cursor = Cursors.Hand;
+            Panel.SetZIndex(tileButton, 0);
+
+            _potentialDraggedTile = null;
+            _draggedTileButton = null;
+            _isTileDragging = false;
+            _isInternalDragging = false;
+            _suppressDeactivateHide = false;
+        }
+
+        private void MoveTileToDropPosition(Point dropPoint)
+        {
+            if (_potentialDraggedTile == null)
                 return;
+
+            ObservableCollection<TileViewModel>? activeTiles = GetActiveTiles();
+            if (activeTiles == null) return;
+
+            int oldIndex = activeTiles.IndexOf(_potentialDraggedTile);
+            if (oldIndex < 0) return;
+
+            int nearestIndex = -1;
+            Point nearestCenter = default;
+            double nearestDistanceSquared = double.MaxValue;
+
+            for (int i = 0; i < activeTiles.Count; i++)
+            {
+                TileViewModel candidate = activeTiles[i];
+                if (ReferenceEquals(candidate, _potentialDraggedTile)) continue;
+
+                if (TilesContainer.ItemContainerGenerator.ContainerFromItem(candidate) is not FrameworkElement container ||
+                    TilesContainer.ItemTemplate?.FindName("TileButton", container) is not Button button)
+                {
+                    continue;
+                }
+
+                Point center = button.TranslatePoint(
+                    new Point(button.ActualWidth / 2, button.ActualHeight / 2),
+                    TilesScrollViewer);
+                double deltaX = center.X - dropPoint.X;
+                double deltaY = center.Y - dropPoint.Y;
+                double distanceSquared = deltaX * deltaX + deltaY * deltaY;
+
+                if (distanceSquared < nearestDistanceSquared)
+                {
+                    nearestDistanceSquared = distanceSquared;
+                    nearestIndex = i;
+                    nearestCenter = center;
+                }
             }
 
-            // Проверяем попадание курсора во внутреннюю область целевой плитки (защита от дрожания на границе)
-            Point p = e.GetPosition(targetBtn);
-            if (p.X < targetBtn.ActualWidth * 0.15 || p.X > targetBtn.ActualWidth * 0.85 ||
-                p.Y < targetBtn.ActualHeight * 0.15 || p.Y > targetBtn.ActualHeight * 0.85)
+            if (nearestIndex < 0) return;
+
+            bool insertAfter = dropPoint.X > nearestCenter.X ||
+                (Math.Abs(dropPoint.X - nearestCenter.X) <= 12 && dropPoint.Y > nearestCenter.Y);
+            int targetIndex = nearestIndex + (insertAfter ? 1 : 0);
+            if (targetIndex > oldIndex) targetIndex--;
+            targetIndex = Math.Clamp(targetIndex, 0, activeTiles.Count - 1);
+
+            if (targetIndex != oldIndex)
             {
-                return;
-            }
+                Button? draggedButton = _draggedTileButton;
+                if (draggedButton != null)
+                    draggedButton.RenderTransform = Transform.Identity;
 
-            var active = GetActiveTiles();
-            if (active == null) return;
+                activeTiles.Move(oldIndex, targetIndex);
 
-            int oldIdx = active.IndexOf(draggedTile);
-            int newIdx = active.IndexOf(targetTile);
-
-            if (oldIdx >= 0 && newIdx >= 0 && oldIdx != newIdx)
-            {
-                _lastTileSwapUtc = DateTime.UtcNow;
-                active.Move(oldIdx, newIdx);
+                if (draggedButton != null)
+                {
+                    TilesContainer.UpdateLayout();
+                    _tileLayoutPosition = draggedButton.TranslatePoint(
+                        new Point(0, 0),
+                        TilesScrollViewer);
+                }
             }
         }
 
-        private void Tile_DragLeave(object sender, DragEventArgs e) { }
-
-        private void Tile_Drop(object sender, DragEventArgs e)
+        private bool MoveTileToCategoryAtPoint(TileViewModel? tile, Point point)
         {
-            if (!e.Data.GetDataPresent(DRAG_TILE_FORMAT)) return;
+            if (tile == null || CategoriesContainer.ItemsSource is not IEnumerable<RadioButton> categoryButtons)
+                return false;
 
-            e.Handled = true;
-            if (e.Data.GetData(DRAG_TILE_FORMAT) is TileViewModel draggedTile &&
-                sender is Button targetBtn &&
-                targetBtn.Tag is TileViewModel targetTile &&
-                !ReferenceEquals(draggedTile, targetTile))
+            foreach (RadioButton button in categoryButtons)
             {
-                var active = GetActiveTiles();
-                if (active != null)
+                if (button.Tag is not string targetCategory || targetCategory == _activeCategory)
+                    continue;
+
+                Point pointInButton = this.TranslatePoint(point, button);
+                if (pointInButton.X < 0 || pointInButton.Y < 0 ||
+                    pointInButton.X > button.ActualWidth || pointInButton.Y > button.ActualHeight)
                 {
-                    int oldIdx = active.IndexOf(draggedTile);
-                    int newIdx = active.IndexOf(targetTile);
-                    if (oldIdx >= 0 && newIdx >= 0 && oldIdx != newIdx)
-                        active.Move(oldIdx, newIdx);
+                    continue;
                 }
+
+                ObservableCollection<TileViewModel>? sourceTiles = GetActiveTiles();
+                if (sourceTiles == null ||
+                    !_categoriesMap.TryGetValue(targetCategory, out ObservableCollection<TileViewModel>? targetTiles) ||
+                    targetTiles.Any(existing => string.Equals(existing.Path, tile.Path, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return true;
+                }
+
+                if (!sourceTiles.Remove(tile))
+                    return true;
+
+                targetTiles.Add(tile);
+                SelectCategory(targetCategory);
+                return true;
             }
+
+            return false;
         }
 
         private void QuickDeleteTileBtn_Click(object sender, RoutedEventArgs e)
@@ -805,7 +909,6 @@ namespace FastPush
         private void CategoryTab_DragEnter(object sender, DragEventArgs e)
         {
             if (e.Data.GetDataPresent(DRAG_CATEGORY_FORMAT) ||
-                e.Data.GetDataPresent(DRAG_TILE_FORMAT) ||
                 e.Data.GetDataPresent(DataFormats.FileDrop))
             {
                 e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.Move;
@@ -836,23 +939,7 @@ namespace FastPush
 
             if (!_categoriesMap.TryGetValue(targetCat, out var targetCol)) return;
 
-            // 2. Перенос плитки на другую вкладку категории
-            if (e.Data.GetDataPresent(DRAG_TILE_FORMAT) && e.Data.GetData(DRAG_TILE_FORMAT) is TileViewModel draggedTile)
-            {
-                e.Handled = true;
-                if (targetCat == _activeCategory) return;
-
-                var sourceCol = GetActiveTiles();
-                if (sourceCol != null && sourceCol.Remove(draggedTile))
-                {
-                    if (!targetCol.Any(t => string.Equals(t.Path, draggedTile.Path, StringComparison.OrdinalIgnoreCase)))
-                        targetCol.Add(draggedTile);
-                    SaveConfiguration();
-                }
-                return;
-            }
-
-            // 3. Сброс внешних ярлыков/файлов прямо на вкладку категории
+            // Сброс внешних ярлыков/файлов прямо на вкладку категории
             if (e.Data.GetDataPresent(DataFormats.FileDrop) && e.Data.GetData(DataFormats.FileDrop) is string[] files)
             {
                 e.Handled = true;
@@ -1191,7 +1278,7 @@ namespace FastPush
 
             RegisterCurrentHotkey(showWarningOnFail: true);
             RecordHotkeyButton.Content = _design.HotkeyDisplay;
-            TrayIcon.ToolTipText = $"Nook • Beta 0.1 ({_design.HotkeyDisplay})";
+            TrayIcon.ToolTipText = $"Nook • Beta 0.3 ({_design.HotkeyDisplay})";
             SaveConfiguration();
         }
 
@@ -1259,7 +1346,7 @@ namespace FastPush
             if (RegisterCurrentHotkey(showWarningOnFail: false))
             {
                 RecordHotkeyButton.Content = _design.HotkeyDisplay;
-                TrayIcon.ToolTipText = $"Nook • Beta 0.1 ({_design.HotkeyDisplay})";
+                TrayIcon.ToolTipText = $"Nook • Beta 0.3 ({_design.HotkeyDisplay})";
                 SaveConfiguration();
             }
             else
@@ -1521,7 +1608,13 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             if (!_categoriesMap.TryGetValue(categoryName, out var tilesCollection)) return;
 
             _activeCategory = categoryName;
-            TilesContainer.ItemsSource = tilesCollection;
+            ICollectionView tilesView = CollectionViewSource.GetDefaultView(tilesCollection);
+            tilesView.Filter = item =>
+                item is TileViewModel tile &&
+                (string.IsNullOrWhiteSpace(TileSearchTextBox.Text) ||
+                 tile.Name.Contains(TileSearchTextBox.Text, StringComparison.OrdinalIgnoreCase) ||
+                 tile.Path.Contains(TileSearchTextBox.Text, StringComparison.OrdinalIgnoreCase));
+            TilesContainer.ItemsSource = tilesView;
             UpdateEmptyHint();
 
             if (_design.SmoothAnimations)
@@ -1534,6 +1627,12 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
         private ObservableCollection<TileViewModel>? GetActiveTiles()
         {
             return _categoriesMap.TryGetValue(_activeCategory, out var list) ? list : null;
+        }
+
+        private void TileSearch_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (TilesContainer.ItemsSource is ICollectionView tilesView)
+                tilesView.Refresh();
         }
 
         private void UpdateEmptyHint()
@@ -1818,7 +1917,7 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
 
         private void Overlay_DragEnter(object sender, DragEventArgs e)
         {
-            if (e.Data.GetDataPresent(DRAG_TILE_FORMAT) || e.Data.GetDataPresent(DRAG_CATEGORY_FORMAT))
+            if (e.Data.GetDataPresent(DRAG_CATEGORY_FORMAT))
                 return;
 
             if (e.Data.GetDataPresent(DataFormats.FileDrop))
@@ -1842,7 +1941,7 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
         {
             OverlayBorder.BorderBrush = (Brush)Application.Current.Resources["BorderSubtleBrush"];
 
-            if (e.Data.GetDataPresent(DRAG_TILE_FORMAT) || e.Data.GetDataPresent(DRAG_CATEGORY_FORMAT))
+            if (e.Data.GetDataPresent(DRAG_CATEGORY_FORMAT))
                 return;
 
             var activeTiles = GetActiveTiles();
