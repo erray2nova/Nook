@@ -8,12 +8,23 @@ namespace FastPush
 {
     public class AppConfig
     {
-        // Новый формат конфига с вкладками
+        public DesignSettings Settings { get; set; } = new();
         public List<CategoryConfig> Categories { get; set; } = new();
 
-        // Поддержка старого формата config.json (при сохранении игнорируется, если null)
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public List<TileConfig>? Tiles { get; set; }
+    }
+
+    public class DesignSettings
+    {
+        // Black | White | Espresso | Matcha
+        public string Theme { get; set; } = "Black";
+        public string AccentColor { get; set; } = "#EC4899";
+        public int BlurOpacity { get; set; } = 82;
+        public bool AnimateBubbles { get; set; } = true;
+        public bool AnimateGrid { get; set; } = true;
+        public bool HideAfterLaunch { get; set; } = true;
+        public bool SmoothAnimations { get; set; } = true;
     }
 
     public class CategoryConfig

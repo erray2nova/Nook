@@ -36,7 +36,7 @@ namespace FastPush
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
-        // --- 2. WIN API: ACRYLIC РАЗМЫТИЕ ФОНА И СКРУГЛЕНИЕ УГЛОВ DWM ---
+        // --- 2. WIN API: ACRYLIC BLUR И СКРУГЛЕНИЕ DWM ---
         [DllImport("user32.dll")]
         private static extern int SetWindowCompositionAttribute(IntPtr hwnd, ref WindowCompositionAttributeData data);
 
@@ -67,7 +67,7 @@ namespace FastPush
             public int SizeOfData;
         }
 
-        // --- 3. WIN API: ИЗВЛЕЧЕНИЕ СИСТЕМНЫХ ИКОНОК ---
+        // --- 3. WIN API: СИСТЕМНЫЕ ИКОНКИ ---
         private const uint SHGFI_ICON = 0x000000100;
         private const uint SHGFI_LARGEICON = 0x000000000;
 
@@ -89,7 +89,7 @@ namespace FastPush
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool DestroyIcon(IntPtr hIcon);
 
-        // --- СОСТОЯНИЕ ПРИЛОЖЕНИЯ ---
+        // --- СОСТОЯНИЕ ЛАУНЧЕРА ---
         private const string RUN_REGISTRY_KEY = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private const string APP_REGISTRY_NAME = "FastPush";
 
@@ -97,10 +97,13 @@ namespace FastPush
         private HwndSource? _source;
         private bool _isExplicitExit = false;
         private bool _isAnimatingHide = false;
+        private bool _isDrawerOpen = false;
+        private bool _isSyncingUI = true;
+        private uint _acrylicTintBgr = 0x120E0E;
 
         private readonly string _configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
 
-        // Храним плитки по вкладкам в оперативной памяти
+        private DesignSettings _design = new();
         private readonly Dictionary<string, ObservableCollection<TileViewModel>> _categoriesMap = new();
         private readonly List<string> _categoryOrder = new();
         private string _activeCategory = string.Empty;
@@ -110,25 +113,27 @@ namespace FastPush
             InitializeComponent();
             TrayIcon.Icon = System.Drawing.SystemIcons.Application;
 
-            // Проверяем статус автозапуска для галочки в меню трея
-            AutoStartMenuItem.IsChecked = IsAutoStartEnabled();
-
             LoadConfiguration();
+            SyncSettingsUI();
 
-            // Если Windows запустила программу автоматически при старте системы (--autostart),
-            // сразу прячем оверлей в трей после инициализации дескриптора окна
             string[] args = Environment.GetCommandLineArgs();
             if (args.Any(a => string.Equals(a, "--autostart", StringComparison.OrdinalIgnoreCase)))
             {
-                Loaded += (_, _) => this.Hide();
+                Loaded += (_, _) =>
+                {
+                    StopBackgroundAnimations();
+                    this.Hide();
+                };
             }
             else
             {
-                Loaded += (_, _) => PlayShowAnimation();
+                Loaded += (_, _) =>
+                {
+                    UpdateBackgroundAnimations();
+                    PlayShowAnimation();
+                };
             }
         }
-
-        // --- СИСТЕМНОЕ ОФОРМЛЕНИЕ: ACRYLIC BLUR И УГЛЫ WINDOWS 11 ---
 
         protected override void OnSourceInitialized(EventArgs e)
         {
@@ -138,14 +143,11 @@ namespace FastPush
             _source = HwndSource.FromHwnd(_windowHandle);
             _source.AddHook(HwndHook);
 
-            // Включаем размытие фона за окном
-            EnableAcrylicBlur();
+            UpdateAcrylicBlur();
 
-            // На Windows 11 включаем аппаратное скругление углов окна (DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2)
-            int cornerPreference = 2;
+            int cornerPreference = 2; // Аппаратное скругление углов Windows 11
             DwmSetWindowAttribute(_windowHandle, 33, ref cornerPreference, sizeof(int));
 
-            // Регистрируем хоткей Ctrl + Alt + Space
             bool isRegistered = RegisterHotKey(
                 _windowHandle,
                 HOTKEY_ID,
@@ -155,29 +157,173 @@ namespace FastPush
             if (!isRegistered)
             {
                 MessageBox.Show("Не удалось зарегистрировать хоткей Ctrl + Alt + Space. Возможно, он уже занят.",
-                                "FastPush", MessageBoxButton.OK, MessageBoxImage.Warning);
+                                "Nook", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
 
-        private void EnableAcrylicBlur()
+        // --- ДВИЖОК ПАЛИТРЫ: 4 ТЕМЫ + 8 АКЦЕНТОВ + АДАПТИВНЫЙ ГРАДИЕНТ ---
+
+        private void ApplyPalette()
         {
+            Color accent;
+            try { accent = (Color)ColorConverter.ConvertFromString(_design.AccentColor); }
+            catch { accent = (Color)ColorConverter.ConvertFromString("#EC4899"); }
+
+            bool isLight = string.Equals(_design.Theme, "White", StringComparison.OrdinalIgnoreCase);
+
+            // Контрастный текст на кнопках и активных вкладках
+            double luminance = accent.R * 0.299 + accent.G * 0.587 + accent.B * 0.114;
+            Color accentFg = luminance > 180 ? Color.FromRgb(20, 20, 24) : Colors.White;
+
+            SetSolidBrush("AccentBrush", accent);
+            SetSolidBrush("AccentSoftBrush", Color.FromArgb(isLight ? (byte)0x26 : (byte)0x30, accent.R, accent.G, accent.B));
+            SetSolidBrush("AccentForegroundBrush", accentFg);
+
+            Color baseBg;
+            Color midBg;
+
+            switch (_design.Theme)
+            {
+                case "White":
+                    _acrylicTintBgr = 0xF7F5F4;
+                    baseBg = Color.FromRgb(246, 247, 251);
+                    midBg = Color.FromRgb(238, 240, 246);
+                    SetSolidBrush("PrimaryTextBrush", Color.FromRgb(24, 24, 30));
+                    SetSolidBrush("SecondaryTextBrush", Color.FromRgb(104, 106, 120));
+                    SetSolidBrush("HeaderSurfaceBrush", Color.FromArgb(0xB8, 255, 255, 255));
+                    SetSolidBrush("DrawerSurfaceBrush", Color.FromArgb(0xF6, 250, 250, 253));
+                    SetSolidBrush("CardSurfaceBrush", Color.FromArgb(0xAA, 255, 255, 255));
+                    SetSolidBrush("TileSurfaceBrush", Color.FromArgb(0xC8, 255, 255, 255));
+                    SetSolidBrush("TileHoverSurfaceBrush", Color.FromArgb(0xF2, 255, 255, 255));
+                    SetSolidBrush("InputSurfaceBrush", Color.FromArgb(0xCC, 236, 238, 244));
+                    SetSolidBrush("MenuSurfaceBrush", Color.FromArgb(0xFA, 252, 252, 255));
+                    SetSolidBrush("BorderSubtleBrush", Color.FromArgb(0x20, 15, 18, 28));
+                    SetSolidBrush("GridLineBrush", Color.FromArgb(0x16, accent.R, accent.G, accent.B));
+                    SetSolidBrush("ScrimBrush", Color.FromArgb(0x38, 15, 18, 28));
+                    break;
+
+                case "Espresso":
+                    _acrylicTintBgr = 0x111621; // BGR для теплого кофейного #211611
+                    baseBg = Color.FromRgb(26, 18, 14);
+                    midBg = Color.FromRgb(38, 26, 20);
+                    SetSolidBrush("PrimaryTextBrush", Color.FromRgb(247, 239, 234));
+                    SetSolidBrush("SecondaryTextBrush", Color.FromRgb(176, 156, 145));
+                    SetSolidBrush("HeaderSurfaceBrush", Color.FromArgb(0x88, 38, 26, 21));
+                    SetSolidBrush("DrawerSurfaceBrush", Color.FromArgb(0xF5, 30, 20, 16));
+                    SetSolidBrush("CardSurfaceBrush", Color.FromArgb(0x78, 45, 31, 25));
+                    SetSolidBrush("TileSurfaceBrush", Color.FromArgb(0x98, 46, 32, 26));
+                    SetSolidBrush("TileHoverSurfaceBrush", Color.FromArgb(0xCC, 62, 44, 36));
+                    SetSolidBrush("InputSurfaceBrush", Color.FromArgb(0xAA, 54, 38, 30));
+                    SetSolidBrush("MenuSurfaceBrush", Color.FromArgb(0xF8, 34, 23, 18));
+                    SetSolidBrush("BorderSubtleBrush", Color.FromArgb(0x28, 255, 235, 220));
+                    SetSolidBrush("GridLineBrush", Color.FromArgb(0x14, 255, 225, 205));
+                    SetSolidBrush("ScrimBrush", Color.FromArgb(0x66, 8, 5, 4));
+                    break;
+
+                case "Matcha":
+                    _acrylicTintBgr = 0x151E12; // BGR для глубокого матча #121E15
+                    baseBg = Color.FromRgb(16, 27, 20);
+                    midBg = Color.FromRgb(23, 39, 29);
+                    SetSolidBrush("PrimaryTextBrush", Color.FromRgb(237, 247, 240));
+                    SetSolidBrush("SecondaryTextBrush", Color.FromRgb(146, 174, 156));
+                    SetSolidBrush("HeaderSurfaceBrush", Color.FromArgb(0x88, 22, 38, 29));
+                    SetSolidBrush("DrawerSurfaceBrush", Color.FromArgb(0xF5, 18, 31, 23));
+                    SetSolidBrush("CardSurfaceBrush", Color.FromArgb(0x78, 27, 46, 35));
+                    SetSolidBrush("TileSurfaceBrush", Color.FromArgb(0x98, 28, 48, 36));
+                    SetSolidBrush("TileHoverSurfaceBrush", Color.FromArgb(0xCC, 38, 64, 48));
+                    SetSolidBrush("InputSurfaceBrush", Color.FromArgb(0xAA, 32, 54, 41));
+                    SetSolidBrush("MenuSurfaceBrush", Color.FromArgb(0xF8, 20, 35, 26));
+                    SetSolidBrush("BorderSubtleBrush", Color.FromArgb(0x26, 220, 255, 235));
+                    SetSolidBrush("GridLineBrush", Color.FromArgb(0x14, 210, 255, 225));
+                    SetSolidBrush("ScrimBrush", Color.FromArgb(0x66, 4, 10, 6));
+                    break;
+
+                default: // Black
+                    _acrylicTintBgr = 0x130E0E;
+                    baseBg = Color.FromRgb(13, 13, 17);
+                    midBg = Color.FromRgb(20, 20, 26);
+                    SetSolidBrush("PrimaryTextBrush", Color.FromRgb(245, 245, 248));
+                    SetSolidBrush("SecondaryTextBrush", Color.FromRgb(146, 146, 160));
+                    SetSolidBrush("HeaderSurfaceBrush", Color.FromArgb(0x82, 24, 24, 31));
+                    SetSolidBrush("DrawerSurfaceBrush", Color.FromArgb(0xF5, 18, 18, 24));
+                    SetSolidBrush("CardSurfaceBrush", Color.FromArgb(0x72, 28, 28, 36));
+                    SetSolidBrush("TileSurfaceBrush", Color.FromArgb(0x94, 28, 28, 36));
+                    SetSolidBrush("TileHoverSurfaceBrush", Color.FromArgb(0xC8, 40, 40, 52));
+                    SetSolidBrush("InputSurfaceBrush", Color.FromArgb(0xAA, 34, 34, 44));
+                    SetSolidBrush("MenuSurfaceBrush", Color.FromArgb(0xF8, 22, 22, 29));
+                    SetSolidBrush("BorderSubtleBrush", Color.FromArgb(0x24, 255, 255, 255));
+                    SetSolidBrush("GridLineBrush", Color.FromArgb(0x11, 255, 255, 255));
+                    SetSolidBrush("ScrimBrush", Color.FromArgb(0x68, 0, 0, 0));
+                    break;
+            }
+
+            // Градиент фона из базовой палитры темы и выбранного акцентного цвета
+            byte surfaceAlpha = (byte)Math.Clamp((int)Math.Round(_design.BlurOpacity * 2.25), 70, 235);
+            Color startTint = BlendColor(baseBg, accent, isLight ? 0.14 : 0.12, surfaceAlpha);
+            Color middleTint = Color.FromArgb(surfaceAlpha, midBg.R, midBg.G, midBg.B);
+            Color endTint = BlendColor(baseBg, accent, isLight ? 0.26 : 0.24, surfaceAlpha);
+
+            var bgGradient = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 1) };
+            bgGradient.GradientStops.Add(new GradientStop(startTint, 0.0));
+            bgGradient.GradientStops.Add(new GradientStop(middleTint, 0.52));
+            bgGradient.GradientStops.Add(new GradientStop(endTint, 1.0));
+            bgGradient.Freeze();
+            Application.Current.Resources["BackgroundGradientBrush"] = bgGradient;
+
+            // Градиентные сферы (пузыри) в цвет акцента
+            var orb1 = new RadialGradientBrush();
+            orb1.GradientStops.Add(new GradientStop(Color.FromArgb(isLight ? (byte)0x55 : (byte)0x48, accent.R, accent.G, accent.B), 0.0));
+            orb1.GradientStops.Add(new GradientStop(Color.FromArgb(0, accent.R, accent.G, accent.B), 1.0));
+            orb1.Freeze();
+            Application.Current.Resources["OrbPrimaryBrush"] = orb1;
+
+            var orb2 = new RadialGradientBrush();
+            orb2.GradientStops.Add(new GradientStop(Color.FromArgb(isLight ? (byte)0x42 : (byte)0x36, accent.R, accent.G, accent.B), 0.0));
+            orb2.GradientStops.Add(new GradientStop(Color.FromArgb(0, accent.R, accent.G, accent.B), 1.0));
+            orb2.Freeze();
+            Application.Current.Resources["OrbSecondaryBrush"] = orb2;
+
+            UpdateAcrylicBlur();
+        }
+
+        private static Color BlendColor(Color baseCol, Color accentCol, double accentRatio, byte alpha)
+        {
+            byte r = (byte)Math.Clamp(baseCol.R * (1 - accentRatio) + accentCol.R * accentRatio, 0, 255);
+            byte g = (byte)Math.Clamp(baseCol.G * (1 - accentRatio) + accentCol.G * accentRatio, 0, 255);
+            byte b = (byte)Math.Clamp(baseCol.B * (1 - accentRatio) + accentCol.B * accentRatio, 0, 255);
+            return Color.FromArgb(alpha, r, g, b);
+        }
+
+        private static void SetSolidBrush(string key, Color color)
+        {
+            var brush = new SolidColorBrush(color);
+            brush.Freeze();
+            Application.Current.Resources[key] = brush;
+        }
+
+        private void UpdateAcrylicBlur()
+        {
+            if (_windowHandle == IntPtr.Zero) return;
+
+            byte alpha = (byte)Math.Clamp((int)Math.Round(_design.BlurOpacity / 100.0 * 240), 50, 240);
+            uint gradientColor = ((uint)alpha << 24) | _acrylicTintBgr;
+
             var accent = new AccentPolicy
             {
                 AccentState = AccentState.ACCENT_ENABLE_ACRYLICBLURBEHIND,
                 AccentFlags = 2,
-                // Цвет тонировки в формате AABBGGRR: 0xCC (80% плотность) + темный графитовый оттенок 161414
-                GradientColor = 0xCC181414
+                GradientColor = gradientColor
             };
 
-            int accentStructSize = Marshal.SizeOf(accent);
-            IntPtr accentPtr = Marshal.AllocHGlobal(accentStructSize);
-            Marshal.StructureToPtr(accent, accentPtr, false);
+            int size = Marshal.SizeOf(accent);
+            IntPtr ptr = Marshal.AllocHGlobal(size);
+            Marshal.StructureToPtr(accent, ptr, false);
 
             var data = new WindowCompositionAttributeData
             {
-                Attribute = 19, // WCA_ACCENT_POLICY
-                SizeOfData = accentStructSize,
-                Data = accentPtr
+                Attribute = 19,
+                SizeOfData = size,
+                Data = ptr
             };
 
             try
@@ -186,31 +332,262 @@ namespace FastPush
             }
             catch
             {
-                // На старых сборках Windows без Acrylic откатываемся на классический Blur
                 accent.AccentState = AccentState.ACCENT_ENABLE_BLURBEHIND;
-                Marshal.StructureToPtr(accent, accentPtr, false);
+                Marshal.StructureToPtr(accent, ptr, false);
                 SetWindowCompositionAttribute(_windowHandle, ref data);
             }
             finally
             {
-                Marshal.FreeHGlobal(accentPtr);
+                Marshal.FreeHGlobal(ptr);
             }
         }
 
-        // --- АНИМАЦИЯ ПОЯВЛЕНИЯ И СКРЫТИЯ ---
+        // --- АНИМАЦИИ ЗАДНЕГО ПЛАНА (ПУЗЫРИ + СЕТКА) ---
+
+        private void UpdateBackgroundAnimations()
+        {
+            BubblesCanvas.Visibility = _design.AnimateBubbles ? Visibility.Visible : Visibility.Collapsed;
+            GridPatternLayer.Visibility = _design.AnimateGrid ? Visibility.Visible : Visibility.Collapsed;
+
+            if (!this.IsVisible) return;
+
+            if (_design.AnimateBubbles)
+            {
+                var sine = new SineEase { EasingMode = EasingMode.EaseInOut };
+                Orb1Translate.BeginAnimation(TranslateTransform.XProperty, CreateWaveAnim(0, 220, 13, sine));
+                Orb1Translate.BeginAnimation(TranslateTransform.YProperty, CreateWaveAnim(0, 120, 16, sine));
+                Orb2Translate.BeginAnimation(TranslateTransform.XProperty, CreateWaveAnim(0, -210, 15, sine));
+                Orb2Translate.BeginAnimation(TranslateTransform.YProperty, CreateWaveAnim(0, -110, 18, sine));
+                Orb3Scale.BeginAnimation(ScaleTransform.ScaleXProperty, CreateWaveAnim(0.85, 1.22, 10, sine));
+                Orb3Scale.BeginAnimation(ScaleTransform.ScaleYProperty, CreateWaveAnim(0.85, 1.22, 12, sine));
+            }
+            else
+            {
+                Orb1Translate.BeginAnimation(TranslateTransform.XProperty, null);
+                Orb1Translate.BeginAnimation(TranslateTransform.YProperty, null);
+                Orb2Translate.BeginAnimation(TranslateTransform.XProperty, null);
+                Orb2Translate.BeginAnimation(TranslateTransform.YProperty, null);
+                Orb3Scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+                Orb3Scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            }
+
+            if (_design.AnimateGrid)
+            {
+                // Бесшовное движение сетки на шаг ячейки 48px
+                var loopX = new DoubleAnimation(0, 48, TimeSpan.FromSeconds(14)) { RepeatBehavior = RepeatBehavior.Forever };
+                var loopY = new DoubleAnimation(0, 48, TimeSpan.FromSeconds(14)) { RepeatBehavior = RepeatBehavior.Forever };
+                GridPatternTranslate.BeginAnimation(TranslateTransform.XProperty, loopX);
+                GridPatternTranslate.BeginAnimation(TranslateTransform.YProperty, loopY);
+            }
+            else
+            {
+                GridPatternTranslate.BeginAnimation(TranslateTransform.XProperty, null);
+                GridPatternTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+            }
+        }
+
+        private void StopBackgroundAnimations()
+        {
+            Orb1Translate.BeginAnimation(TranslateTransform.XProperty, null);
+            Orb1Translate.BeginAnimation(TranslateTransform.YProperty, null);
+            Orb2Translate.BeginAnimation(TranslateTransform.XProperty, null);
+            Orb2Translate.BeginAnimation(TranslateTransform.YProperty, null);
+            Orb3Scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            Orb3Scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            GridPatternTranslate.BeginAnimation(TranslateTransform.XProperty, null);
+            GridPatternTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+        }
+
+        private static DoubleAnimation CreateWaveAnim(double from, double to, double sec, IEasingFunction ease)
+        {
+            return new DoubleAnimation(from, to, TimeSpan.FromSeconds(sec))
+            {
+                AutoReverse = true,
+                RepeatBehavior = RepeatBehavior.Forever,
+                EasingFunction = ease
+            };
+        }
+
+        // --- ВЫЕЗЖАЮЩАЯ ПАНЕЛЬ НАСТРОЕК (СПРАВА НАЛЕВО) ---
+
+        private void OpenSettingsDrawer()
+        {
+            if (_isDrawerOpen) return;
+            _isDrawerOpen = true;
+
+            SyncSettingsUI();
+
+            SettingsScrim.Visibility = Visibility.Visible;
+            SettingsDrawer.Visibility = Visibility.Visible;
+
+            var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+            var duration = TimeSpan.FromMilliseconds(260);
+
+            SettingsScrim.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0, 1, duration));
+            DrawerTranslate.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(420, 0, duration) { EasingFunction = ease });
+        }
+
+        private void CloseSettingsDrawer(bool instant = false)
+        {
+            if (!_isDrawerOpen) return;
+            _isDrawerOpen = false;
+
+            if (instant)
+            {
+                SettingsScrim.BeginAnimation(UIElement.OpacityProperty, null);
+                DrawerTranslate.BeginAnimation(TranslateTransform.XProperty, null);
+                DrawerTranslate.X = 420;
+                SettingsScrim.Visibility = Visibility.Collapsed;
+                SettingsDrawer.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            var ease = new CubicEase { EasingMode = EasingMode.EaseIn };
+            var duration = TimeSpan.FromMilliseconds(210);
+
+            var scrimFade = new DoubleAnimation(SettingsScrim.Opacity, 0, duration);
+            var slideOut = new DoubleAnimation(DrawerTranslate.X, 420, duration) { EasingFunction = ease };
+
+            slideOut.Completed += (_, _) =>
+            {
+                if (!_isDrawerOpen)
+                {
+                    SettingsScrim.Visibility = Visibility.Collapsed;
+                    SettingsDrawer.Visibility = Visibility.Collapsed;
+                }
+            };
+
+            SettingsScrim.BeginAnimation(UIElement.OpacityProperty, scrimFade);
+            DrawerTranslate.BeginAnimation(TranslateTransform.XProperty, slideOut);
+        }
+
+        private void OpenSettingsBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isDrawerOpen) CloseSettingsDrawer();
+            else OpenSettingsDrawer();
+        }
+
+        private void CloseSettingsBtn_Click(object sender, RoutedEventArgs e) => CloseSettingsDrawer();
+
+        private void SettingsScrim_MouseLeftButtonDown(object sender, MouseButtonEventArgs e) => CloseSettingsDrawer();
+
+        private void SettingsTab_Checked(object sender, RoutedEventArgs e)
+        {
+            if (PanelAppearance == null || sender is not RadioButton rb || rb.Tag is not string tab) return;
+
+            PanelAppearance.Visibility = tab == "Appearance" ? Visibility.Visible : Visibility.Collapsed;
+            PanelGeneral.Visibility = tab == "General" ? Visibility.Visible : Visibility.Collapsed;
+            PanelOther.Visibility = tab == "Other" ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void SyncSettingsUI()
+        {
+            _isSyncingUI = true;
+
+            foreach (var rb in ThemesPanel.Children.OfType<RadioButton>())
+                rb.IsChecked = string.Equals(rb.Tag as string, _design.Theme, StringComparison.OrdinalIgnoreCase);
+
+            foreach (var rb in AccentsPanel.Children.OfType<RadioButton>())
+                rb.IsChecked = string.Equals(rb.Tag as string, _design.AccentColor, StringComparison.OrdinalIgnoreCase);
+
+            int blur = Math.Clamp(_design.BlurOpacity, 25, 95);
+            BlurSlider.Value = blur;
+            BlurValueText.Text = $"{blur}%";
+
+            BubblesToggle.IsChecked = _design.AnimateBubbles;
+            GridToggle.IsChecked = _design.AnimateGrid;
+            HideAfterLaunchToggle.IsChecked = _design.HideAfterLaunch;
+            SmoothAnimToggle.IsChecked = _design.SmoothAnimations;
+
+            bool autoStart = IsAutoStartEnabled();
+            AutoStartToggle.IsChecked = autoStart;
+            AutoStartMenuItem.IsChecked = autoStart;
+
+            _isSyncingUI = false;
+        }
+
+        private void ThemeOption_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isSyncingUI || sender is not RadioButton rb || rb.Tag is not string theme) return;
+            _design.Theme = theme;
+            ApplyPalette();
+            SaveConfiguration();
+        }
+
+        private void AccentSwatch_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isSyncingUI || sender is not RadioButton rb || rb.Tag is not string hex) return;
+            _design.AccentColor = hex;
+            ApplyPalette();
+            SaveConfiguration();
+        }
+
+        private void BlurSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (_isSyncingUI) return;
+            _design.BlurOpacity = (int)Math.Round(e.NewValue);
+            if (BlurValueText != null) BlurValueText.Text = $"{_design.BlurOpacity}%";
+            ApplyPalette();
+            SaveConfiguration();
+        }
+
+        private void DesignToggle_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isSyncingUI) return;
+            _design.AnimateBubbles = BubblesToggle.IsChecked == true;
+            _design.AnimateGrid = GridToggle.IsChecked == true;
+            _design.HideAfterLaunch = HideAfterLaunchToggle.IsChecked == true;
+            _design.SmoothAnimations = SmoothAnimToggle.IsChecked == true;
+
+            UpdateBackgroundAnimations();
+            SaveConfiguration();
+        }
+
+        private void AutoStartToggle_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isSyncingUI) return;
+            bool enable = AutoStartToggle.IsChecked == true;
+            SetAutoStart(enable);
+            AutoStartMenuItem.IsChecked = IsAutoStartEnabled();
+        }
+
+        private void ResetDesign_Click(object sender, RoutedEventArgs e)
+        {
+            _design = new DesignSettings();
+            ApplyPalette();
+            UpdateBackgroundAnimations();
+            SyncSettingsUI();
+            SaveConfiguration();
+        }
+
+        private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"\"{AppDomain.CurrentDomain.BaseDirectory}\"",
+                UseShellExecute = true
+            });
+        }
+
+        // --- АНИМАЦИЯ ПОЯВЛЕНИЯ И СКРЫТИЯ ОКНА ---
 
         private void PlayShowAnimation()
         {
             _isAnimatingHide = false;
+            if (!_design.SmoothAnimations)
+            {
+                this.Opacity = 1.0;
+                OverlayScale.ScaleX = 1.0;
+                OverlayScale.ScaleY = 1.0;
+                return;
+            }
+
             var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
             var duration = TimeSpan.FromMilliseconds(180);
 
-            // Плавное проявление прозрачности окна
-            var fadeAnim = new DoubleAnimation(0.0, 1.0, duration) { EasingFunction = ease };
-            this.BeginAnimation(Window.OpacityProperty, fadeAnim);
-
-            // Легкий зум контента из центра (0.94 -> 1.0)
-            var scaleAnim = new DoubleAnimation(0.94, 1.0, duration) { EasingFunction = ease };
+            this.BeginAnimation(Window.OpacityProperty, new DoubleAnimation(0.0, 1.0, duration) { EasingFunction = ease });
+            var scaleAnim = new DoubleAnimation(0.95, 1.0, duration) { EasingFunction = ease };
             OverlayScale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleAnim);
             OverlayScale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleAnim);
         }
@@ -218,8 +595,16 @@ namespace FastPush
         private void AnimateAndHide()
         {
             if (!this.IsVisible || _isAnimatingHide) return;
-            _isAnimatingHide = true;
+            CloseSettingsDrawer(instant: true);
 
+            if (!_design.SmoothAnimations)
+            {
+                StopBackgroundAnimations();
+                this.Hide();
+                return;
+            }
+
+            _isAnimatingHide = true;
             var ease = new CubicEase { EasingMode = EasingMode.EaseIn };
             var duration = TimeSpan.FromMilliseconds(130);
 
@@ -230,6 +615,7 @@ namespace FastPush
             {
                 if (_isAnimatingHide)
                 {
+                    StopBackgroundAnimations();
                     this.Hide();
                     _isAnimatingHide = false;
                 }
@@ -248,15 +634,16 @@ namespace FastPush
             }
             else
             {
-                this.Opacity = 0; // Убираем мелькание кадра перед стартом анимации
+                this.Opacity = 0;
                 this.Show();
                 this.Activate();
                 this.Focus();
+                UpdateBackgroundAnimations();
                 PlayShowAnimation();
             }
         }
 
-        // --- АВТОЗАПУСК С WINDOWS (РЕЕСТР HKCU) ---
+        // --- АВТОЗАПУСК С WINDOWS ---
 
         private bool IsAutoStartEnabled()
         {
@@ -265,10 +652,7 @@ namespace FastPush
                 using RegistryKey? key = Registry.CurrentUser.OpenSubKey(RUN_REGISTRY_KEY, false);
                 return key?.GetValue(APP_REGISTRY_NAME) != null;
             }
-            catch
-            {
-                return false;
-            }
+            catch { return false; }
         }
 
         private void SetAutoStart(bool enable)
@@ -280,12 +664,9 @@ namespace FastPush
 
                 if (enable)
                 {
-                    // Environment.ProcessPath возвращает точный путь к текущему .exe
                     string? exePath = Environment.ProcessPath;
                     if (!string.IsNullOrEmpty(exePath))
-                    {
                         key.SetValue(APP_REGISTRY_NAME, $"\"{exePath}\" --autostart");
-                    }
                 }
                 else
                 {
@@ -295,25 +676,27 @@ namespace FastPush
             catch (Exception ex)
             {
                 MessageBox.Show($"Не удалось изменить настройки автозапуска:\n{ex.Message}",
-                                "FastPush", MessageBoxButton.OK, MessageBoxImage.Warning);
+                                "Nook", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
 
         private void AutoStartMenuItem_Click(object sender, RoutedEventArgs e)
         {
             SetAutoStart(AutoStartMenuItem.IsChecked);
+            SyncSettingsUI();
         }
 
-        // --- КАТЕГОРИИ (ВКЛАДКИ) И КОНФИГУРАЦИЯ JSON ---
+        // --- КАТЕГОРИИ И ПЛИТКИ (JSON) ---
 
         private void LoadConfiguration()
         {
             AppConfig config = ReadOrCreateConfig();
+            _design = config.Settings ?? new DesignSettings();
+            ApplyPalette();
+
             _categoriesMap.Clear();
             _categoryOrder.Clear();
 
-            // Миграция: если в файле старый формат (только плоский список Tiles без Categories),
-            // переносим существующие плитки во вкладку "Работа" и добавляем "Игры" + "Папки"
             if ((config.Categories == null || config.Categories.Count == 0) && config.Tiles != null && config.Tiles.Count > 0)
             {
                 config.Categories = new List<CategoryConfig>
@@ -325,11 +708,8 @@ namespace FastPush
                 config.Tiles = null;
             }
 
-            // Если конфиг совсем пустой — создаем стандартные 3 категории
             if (config.Categories == null || config.Categories.Count == 0)
-            {
                 config = CreateDefaultConfig();
-            }
 
             foreach (CategoryConfig category in config.Categories)
             {
@@ -360,8 +740,6 @@ namespace FastPush
             }
 
             BuildCategoryTabsUI();
-
-            // Выбираем первую вкладку по умолчанию (или сохраняем активную при перезагрузке конфига)
             string targetTab = _categoriesMap.ContainsKey(_activeCategory) ? _activeCategory : _categoryOrder.First();
             SelectCategory(targetTab);
         }
@@ -383,9 +761,7 @@ namespace FastPush
                 radioBtn.Checked += (s, _) =>
                 {
                     if (s is RadioButton rb && rb.Tag is string selectedCat)
-                    {
                         SwitchActiveCategoryCollection(selectedCat);
-                    }
                 };
 
                 tabButtons.Add(radioBtn);
@@ -399,10 +775,7 @@ namespace FastPush
             if (CategoriesContainer.ItemsSource is IEnumerable<RadioButton> buttons)
             {
                 RadioButton? match = buttons.FirstOrDefault(b => string.Equals(b.Tag as string, categoryName, StringComparison.Ordinal));
-                if (match != null)
-                {
-                    match.IsChecked = true;
-                }
+                if (match != null) match.IsChecked = true;
             }
         }
 
@@ -414,9 +787,11 @@ namespace FastPush
             TilesContainer.ItemsSource = tilesCollection;
             UpdateEmptyHint();
 
-            // Легкая плавная проявка плиток при смене вкладки
-            TilesContainer.BeginAnimation(UIElement.OpacityProperty,
-                new DoubleAnimation(0.35, 1.0, TimeSpan.FromMilliseconds(140)));
+            if (_design.SmoothAnimations)
+            {
+                TilesContainer.BeginAnimation(UIElement.OpacityProperty,
+                    new DoubleAnimation(0.35, 1.0, TimeSpan.FromMilliseconds(140)));
+            }
         }
 
         private ObservableCollection<TileViewModel>? GetActiveTiles()
@@ -427,7 +802,7 @@ namespace FastPush
         private void UpdateEmptyHint()
         {
             var current = GetActiveTiles();
-            EmptyHintText.Visibility = (current == null || current.Count == 0) ? Visibility.Visible : Visibility.Collapsed;
+            EmptyStatePanel.Visibility = (current == null || current.Count == 0) ? Visibility.Visible : Visibility.Collapsed;
         }
 
         private void SaveConfiguration()
@@ -436,6 +811,7 @@ namespace FastPush
             {
                 var configToSave = new AppConfig
                 {
+                    Settings = _design,
                     Categories = _categoryOrder.Select(catName => new CategoryConfig
                     {
                         Name = catName,
@@ -446,7 +822,7 @@ namespace FastPush
                             Icon = t.CustomIconPath
                         }).ToList()
                     }).ToList(),
-                    Tiles = null // Старое поле больше не пишем
+                    Tiles = null
                 };
 
                 var saveOptions = new JsonSerializerOptions
@@ -459,8 +835,8 @@ namespace FastPush
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Не удалось сохранить изменения в config.json:\n{ex.Message}",
-                                "Ошибка сохранения FastPush", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show($"Не удалось сохранить config.json:\n{ex.Message}",
+                                "Nook", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
@@ -494,17 +870,8 @@ namespace FastPush
 
                 return JsonSerializer.Deserialize<AppConfig>(jsonContent, readOptions) ?? CreateDefaultConfig();
             }
-            catch (JsonException jsonEx)
+            catch
             {
-                MessageBox.Show($"Ошибка синтаксиса в файле config.json (строка {jsonEx.LineNumber + 1}).\n" +
-                                $"Загружен резервный набор категорий.\n\nДетали: {jsonEx.Message}",
-                                "Ошибка конфигурации FastPush", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return CreateDefaultConfig();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Не удалось прочитать config.json:\n{ex.Message}",
-                                "Ошибка чтения FastPush", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return CreateDefaultConfig();
             }
         }
@@ -516,20 +883,17 @@ namespace FastPush
 
             return new AppConfig
             {
+                Settings = new DesignSettings(),
                 Categories = new List<CategoryConfig>
                 {
-                    new CategoryConfig
-                    {
-                        Name = "Игры",
-                        Tiles = new List<TileConfig>()
-                    },
+                    new CategoryConfig { Name = "Игры", Tiles = new List<TileConfig>() },
                     new CategoryConfig
                     {
                         Name = "Работа",
                         Tiles = new List<TileConfig>
                         {
-                            new TileConfig { Name = "Блокнот", Path = @"C:\Windows\System32\notepad.exe", Icon = "" },
-                            new TileConfig { Name = "Калькулятор", Path = @"C:\Windows\System32\calc.exe", Icon = "" }
+                            new TileConfig { Name = "Блокнот", Path = @"C:\Windows\System32\notepad.exe" },
+                            new TileConfig { Name = "Калькулятор", Path = @"C:\Windows\System32\calc.exe" }
                         }
                     },
                     new CategoryConfig
@@ -537,8 +901,8 @@ namespace FastPush
                         Name = "Папки",
                         Tiles = new List<TileConfig>
                         {
-                            new TileConfig { Name = "Проводник", Path = @"C:\Windows\explorer.exe", Icon = "" },
-                            new TileConfig { Name = "Загрузки", Path = Directory.Exists(downloadsPath) ? downloadsPath : userProfile, Icon = "" }
+                            new TileConfig { Name = "Проводник", Path = @"C:\Windows\explorer.exe" },
+                            new TileConfig { Name = "Загрузки", Path = Directory.Exists(downloadsPath) ? downloadsPath : userProfile }
                         }
                     }
                 }
@@ -557,8 +921,6 @@ namespace FastPush
             string fileName = Path.GetFileNameWithoutExtension(trimmedPath);
             return string.IsNullOrWhiteSpace(fileName) ? trimmedPath : fileName;
         }
-
-        // --- ИЗВЛЕЧЕНИЕ ИКОНОК ---
 
         private ImageSource ResolveTileIcon(string targetPath, string? customIconPath)
         {
@@ -606,14 +968,42 @@ namespace FastPush
             return defaultIcon;
         }
 
-        // --- DRAG & DROP В ТЕКУЩУЮ АКТИВНУЮ ВКЛАДКУ ---
+        // --- ДОБАВЛЕНИЕ ПЛИТОК (КНОПКА + DRAG & DROP) ---
+
+        private void AddTileManual_Click(object sender, RoutedEventArgs e)
+        {
+            var activeTiles = GetActiveTiles();
+            if (activeTiles == null) return;
+
+            var dialog = new OpenFileDialog
+            {
+                Title = "Выберите приложение или ярлык",
+                Filter = "Приложения и ярлыки (*.exe;*.lnk;*.url)|*.exe;*.lnk;*.url|Все файлы (*.*)|*.*"
+            };
+
+            if (dialog.ShowDialog(this) == true)
+            {
+                string path = dialog.FileName;
+                if (!activeTiles.Any(t => string.Equals(t.Path, path, StringComparison.OrdinalIgnoreCase)))
+                {
+                    activeTiles.Add(new TileViewModel
+                    {
+                        Name = GetDefaultDisplayName(path),
+                        Path = path,
+                        CustomIconPath = string.Empty,
+                        IconSource = ResolveTileIcon(path, null)
+                    });
+                    SaveConfiguration();
+                }
+            }
+        }
 
         private void Overlay_DragEnter(object sender, DragEventArgs e)
         {
             if (e.Data.GetDataPresent(DataFormats.FileDrop))
             {
                 e.Effects = DragDropEffects.Copy;
-                OverlayBorder.BorderBrush = new SolidColorBrush(Color.FromRgb(58, 122, 254));
+                OverlayBorder.BorderBrush = (Brush)Application.Current.Resources["AccentBrush"];
             }
             else
             {
@@ -624,12 +1014,12 @@ namespace FastPush
 
         private void Overlay_DragLeave(object sender, DragEventArgs e)
         {
-            OverlayBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(0x28, 0xFF, 0xFF, 0xFF));
+            OverlayBorder.BorderBrush = (Brush)Application.Current.Resources["BorderSubtleBrush"];
         }
 
         private void Overlay_Drop(object sender, DragEventArgs e)
         {
-            OverlayBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(0x28, 0xFF, 0xFF, 0xFF));
+            OverlayBorder.BorderBrush = (Brush)Application.Current.Resources["BorderSubtleBrush"];
 
             var activeTiles = GetActiveTiles();
             if (activeTiles == null) return;
@@ -641,9 +1031,7 @@ namespace FastPush
                 foreach (string path in droppedPaths)
                 {
                     if (!File.Exists(path) && !Directory.Exists(path)) continue;
-
-                    bool alreadyExists = activeTiles.Any(t => string.Equals(t.Path, path, StringComparison.OrdinalIgnoreCase));
-                    if (alreadyExists) continue;
+                    if (activeTiles.Any(t => string.Equals(t.Path, path, StringComparison.OrdinalIgnoreCase))) continue;
 
                     activeTiles.Add(new TileViewModel
                     {
@@ -652,14 +1040,10 @@ namespace FastPush
                         CustomIconPath = string.Empty,
                         IconSource = ResolveTileIcon(path, null)
                     });
-
                     addedAny = true;
                 }
 
-                if (addedAny)
-                {
-                    SaveConfiguration();
-                }
+                if (addedAny) SaveConfiguration();
             }
         }
 
@@ -705,7 +1089,8 @@ namespace FastPush
             if (sender is Button clickedButton && clickedButton.Tag is TileViewModel tile)
             {
                 LaunchItem(tile.Path);
-                AnimateAndHide();
+                if (_design.HideAfterLaunch)
+                    AnimateAndHide();
             }
         }
 
@@ -732,20 +1117,18 @@ namespace FastPush
 
                 string? workingDir = Path.GetDirectoryName(path);
                 if (!string.IsNullOrEmpty(workingDir) && Directory.Exists(workingDir))
-                {
                     startInfo.WorkingDirectory = workingDir;
-                }
 
                 Process.Start(startInfo);
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"Не удалось открыть объект:\n{path}\n\nОшибка: {ex.Message}",
-                                "Ошибка FastPush", MessageBoxButton.OK, MessageBoxImage.Error);
+                                "Nook", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
-        // --- ГОРЯЧИЕ КЛАВИШИ И ЖИЗНЕННЫЙ ЦИКЛ ОКНА ---
+        // --- ГОРЯЧИЕ КЛАВИШИ И ТРЕЙ ---
 
         private IntPtr HwndHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
@@ -761,18 +1144,17 @@ namespace FastPush
         {
             if (e.Key == Key.Escape)
             {
-                AnimateAndHide();
+                // Если открыта шторка настроек — первый Esc плавно закрывает её, второй скрывает окно
+                if (_isDrawerOpen) CloseSettingsDrawer();
+                else AnimateAndHide();
                 return;
             }
 
-            // Быстрое переключение вкладок цифрами 1..9 на клавиатуре
-            if (e.Key >= Key.D1 && e.Key <= Key.D9)
+            if (!_isDrawerOpen && e.Key >= Key.D1 && e.Key <= Key.D9)
             {
                 int index = e.Key - Key.D1;
                 if (index < _categoryOrder.Count)
-                {
                     SelectCategory(_categoryOrder[index]);
-                }
             }
         }
 
@@ -780,7 +1162,17 @@ namespace FastPush
 
         private void MenuOpen_Click(object sender, RoutedEventArgs e) => ToggleOverlay();
 
-        private void MenuReload_Click(object sender, RoutedEventArgs e) => LoadConfiguration();
+        private void MenuSettings_Click(object sender, RoutedEventArgs e)
+        {
+            if (!this.IsVisible) ToggleOverlay();
+            OpenSettingsDrawer();
+        }
+
+        private void MenuReload_Click(object sender, RoutedEventArgs e)
+        {
+            LoadConfiguration();
+            SyncSettingsUI();
+        }
 
         private void MenuExit_Click(object sender, RoutedEventArgs e)
         {
@@ -801,6 +1193,7 @@ namespace FastPush
 
         protected override void OnClosed(EventArgs e)
         {
+            StopBackgroundAnimations();
             _source?.RemoveHook(HwndHook);
             UnregisterHotKey(_windowHandle, HOTKEY_ID);
             TrayIcon.Dispose();
