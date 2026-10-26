@@ -30,10 +30,28 @@ namespace FastPush
         public static readonly DependencyProperty IsEditModeProperty =
             DependencyProperty.Register(nameof(IsEditMode), typeof(bool), typeof(MainWindow), new PropertyMetadata(false));
 
+        public static readonly DependencyProperty TileSizeProperty =
+            DependencyProperty.Register(nameof(TileSize), typeof(double), typeof(MainWindow), new PropertyMetadata(150.0));
+
+        public static readonly DependencyProperty TileMarginProperty =
+            DependencyProperty.Register(nameof(TileMargin), typeof(Thickness), typeof(MainWindow), new PropertyMetadata(new Thickness(14)));
+
         public bool IsEditMode
         {
             get => (bool)GetValue(IsEditModeProperty);
             set => SetValue(IsEditModeProperty, value);
+        }
+
+        public double TileSize
+        {
+            get => (double)GetValue(TileSizeProperty);
+            set => SetValue(TileSizeProperty, value);
+        }
+
+        public Thickness TileMargin
+        {
+            get => (Thickness)GetValue(TileMarginProperty);
+            set => SetValue(TileMarginProperty, value);
         }
 
         // --- 1. WIN API: ГЛОБАЛЬНЫЙ ХОТКЕЙ ---
@@ -44,12 +62,17 @@ namespace FastPush
         private const uint MOD_SHIFT = 0x0004;
         private const uint MOD_WIN = 0x0008;
         private const uint MOD_NOREPEAT = 0x4000;
+        private const int VK_LWIN = 0x5B;
+        private const int VK_RWIN = 0x5C;
 
         [DllImport("user32.dll")]
         private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
 
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+        [DllImport("user32.dll")]
+        private static extern short GetAsyncKeyState(int vKey);
 
         // --- 2. WIN API: ACRYLIC BLUR И СКРУГЛЕНИЕ DWM ---
         [DllImport("user32.dll")]
@@ -120,7 +143,10 @@ namespace FastPush
         private bool _isSyncingUI = true;
         private bool _suppressDeactivateHide = false;
         private bool _isRecordingHotkey = false;
+        private bool _isApplyingLayoutProfile;
         private uint _acrylicTintBgr = 0x130E0E;
+        private int _activeGridColumns;
+        private readonly DispatcherTimer _resizeSaveTimer = new();
 
         // Перетаскивание плиток и вкладок
         private Point _tileDragStartPoint;
@@ -140,6 +166,7 @@ namespace FastPush
 
         private DesignSettings _design = new();
         private readonly Dictionary<string, ObservableCollection<TileViewModel>> _categoriesMap = new();
+        private readonly Dictionary<string, Dictionary<int, List<string>>> _categoryLayouts = new(StringComparer.OrdinalIgnoreCase);
         private readonly List<string> _categoryOrder = new();
         private string _activeCategory = string.Empty;
 
@@ -152,6 +179,12 @@ namespace FastPush
             MigrateLegacyConfigIfNeeded();
 
             InitializeComponent();
+            _resizeSaveTimer.Interval = TimeSpan.FromMilliseconds(600);
+            _resizeSaveTimer.Tick += (_, _) =>
+            {
+                _resizeSaveTimer.Stop();
+                SaveConfiguration();
+            };
             TrayIcon.Icon = System.Drawing.SystemIcons.Application;
             InitializeBokehParticles();
 
@@ -181,6 +214,8 @@ namespace FastPush
                     PlayShowAnimation();
                 };
             }
+
+            Loaded += (_, _) => UpdateActiveGridColumnProfile();
         }
 
         private void MigrateLegacyConfigIfNeeded()
@@ -314,6 +349,9 @@ namespace FastPush
                     break;
             }
 
+            ApplyTileOpacity("TileSurfaceBrush");
+            ApplyTileOpacity("TileHoverSurfaceBrush");
+
             // Честный диапазон 0% (прозрачное стекло, alpha=8) .. 100% (матовый корпус, alpha=250)
             double t = Math.Clamp(_design.BlurOpacity / 100.0, 0.0, 1.0);
             byte surfaceAlpha = (byte)Math.Clamp((int)Math.Round(8 + t * 242), 8, 250);
@@ -360,6 +398,17 @@ namespace FastPush
             var brush = new SolidColorBrush(color);
             brush.Freeze();
             Application.Current.Resources[key] = brush;
+        }
+
+        private void ApplyTileOpacity(string key)
+        {
+            if (Application.Current.Resources[key] is not SolidColorBrush source) return;
+
+            byte alpha = (byte)Math.Clamp(
+                (int)Math.Round(source.Color.A * _design.TileOpacity / 100.0),
+                0,
+                255);
+            SetSolidBrush(key, Color.FromArgb(alpha, source.Color.R, source.Color.G, source.Color.B));
         }
 
         private void UpdateAcrylicBlur()
@@ -1201,9 +1250,21 @@ namespace FastPush
             foreach (var rb in BgModesPanel.Children.OfType<RadioButton>())
                 rb.IsChecked = string.Equals(rb.Tag as string, _design.BackgroundMode, StringComparison.OrdinalIgnoreCase);
 
+            foreach (var rb in GridPresetsPanel.Children.OfType<RadioButton>())
+                rb.IsChecked = string.Equals(rb.Tag as string, _design.GridPreset, StringComparison.OrdinalIgnoreCase);
+
             int blur = Math.Clamp(_design.BlurOpacity, 0, 100);
             BlurSlider.Value = blur;
             BlurValueText.Text = $"{blur}%";
+
+            TileSizeSlider.Value = _design.TileSize;
+            TileSpacingSlider.Value = _design.TileSpacing;
+            TileOpacitySlider.Value = _design.TileOpacity;
+            TileSizeValueText.Text = $"{_design.TileSize:0}";
+            TileSpacingValueText.Text = $"{_design.TileSpacing:0}";
+            TileOpacityValueText.Text = $"{_design.TileOpacity}%";
+            TileSize = _design.TileSize;
+            TileMargin = new Thickness(_design.TileSpacing);
 
             ShowClockToggle.IsChecked = _design.ShowClock;
             HideOnDeactivateToggle.IsChecked = _design.HideOnDeactivate;
@@ -1251,6 +1312,57 @@ namespace FastPush
             SaveConfiguration();
         }
 
+        private void GridPreset_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isSyncingUI || sender is not RadioButton button || button.Tag is not string preset)
+                return;
+
+            _design.GridPreset = preset;
+            (double size, double spacing) = preset switch
+            {
+                "Compact" => (126, 9),
+                "Dense" => (104, 5),
+                _ => (150, 14)
+            };
+
+            _isSyncingUI = true;
+            TileSizeSlider.Value = size;
+            TileSpacingSlider.Value = spacing;
+            _isSyncingUI = false;
+            ApplyGridSettings(size, spacing);
+        }
+
+        private void GridSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (_isSyncingUI || TileSizeSlider == null || TileSpacingSlider == null) return;
+
+            _design.GridPreset = "Custom";
+            _design.TileSize = TileSizeSlider.Value;
+            _design.TileSpacing = TileSpacingSlider.Value;
+            TileSizeValueText.Text = $"{_design.TileSize:0}";
+            TileSpacingValueText.Text = $"{_design.TileSpacing:0}";
+            ApplyGridSettings(_design.TileSize, _design.TileSpacing);
+        }
+
+        private void ApplyGridSettings(double size, double spacing)
+        {
+            TileSize = size;
+            TileMargin = new Thickness(spacing);
+            TilesContainer.UpdateLayout();
+            UpdateActiveGridColumnProfile();
+            SaveConfiguration();
+        }
+
+        private void TileOpacitySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (_isSyncingUI) return;
+
+            _design.TileOpacity = (int)Math.Round(e.NewValue);
+            TileOpacityValueText.Text = $"{_design.TileOpacity}%";
+            ApplyPalette();
+            SaveConfiguration();
+        }
+
         private void DesignToggle_Click(object sender, RoutedEventArgs e)
         {
             if (_isSyncingUI) return;
@@ -1265,13 +1377,147 @@ namespace FastPush
 
         private void RecordHotkeyButton_Click(object sender, RoutedEventArgs e)
         {
+            ManualHotkeyPanel.Visibility = Visibility.Collapsed;
             _isRecordingHotkey = true;
             RecordHotkeyButton.Content = "Нажмите комбинацию... (Esc — отмена)";
+        }
+
+        private void ManualHotkeyButton_Click(object sender, RoutedEventArgs e)
+        {
+            _isRecordingHotkey = false;
+            RecordHotkeyButton.Content = _design.HotkeyDisplay;
+            ManualHotkeyTextBox.Text = _design.HotkeyDisplay;
+            ManualHotkeyPanel.Visibility = Visibility.Visible;
+            ManualHotkeyTextBox.Focus();
+            ManualHotkeyTextBox.SelectAll();
+        }
+
+        private void CancelManualHotkey_Click(object sender, RoutedEventArgs e)
+        {
+            ManualHotkeyPanel.Visibility = Visibility.Collapsed;
+        }
+
+        private void ManualHotkeyTextBox_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter)
+            {
+                SaveManualHotkey_Click(sender, e);
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Escape)
+            {
+                CancelManualHotkey_Click(sender, e);
+                e.Handled = true;
+            }
+        }
+
+        private void SaveManualHotkey_Click(object sender, RoutedEventArgs e)
+        {
+            if (!TryParseHotkey(ManualHotkeyTextBox.Text, out uint modifiers, out uint virtualKey, out string display))
+            {
+                MessageBox.Show("Введите сочетание из одной или нескольких клавиш-модификаторов (Ctrl, Alt, Shift, Win) и одной основной клавиши. Например: Shift + Win + A.",
+                    "Некорректное сочетание", MessageBoxButton.OK, MessageBoxImage.Warning);
+                ManualHotkeyTextBox.Focus();
+                ManualHotkeyTextBox.SelectAll();
+                return;
+            }
+
+            uint previousModifiers = _design.HotkeyModifiers;
+            uint previousVirtualKey = _design.HotkeyVirtualKey;
+            string previousDisplay = _design.HotkeyDisplay;
+
+            _design.HotkeyModifiers = modifiers;
+            _design.HotkeyVirtualKey = virtualKey;
+            _design.HotkeyDisplay = display;
+
+            if (!RegisterCurrentHotkey(showWarningOnFail: false))
+            {
+                _design.HotkeyModifiers = previousModifiers;
+                _design.HotkeyVirtualKey = previousVirtualKey;
+                _design.HotkeyDisplay = previousDisplay;
+                RegisterCurrentHotkey(showWarningOnFail: false);
+                MessageBox.Show($"Windows не разрешила зарегистрировать сочетание «{display}». Возможно, оно занято другой программой или зарезервировано системой. Прежний хоткей сохранён.",
+                    "Не удалось назначить хоткей", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            RecordHotkeyButton.Content = display;
+            TrayIcon.ToolTipText = $"Nook • Beta 0.3 ({display})";
+            ManualHotkeyPanel.Visibility = Visibility.Collapsed;
+            SaveConfiguration();
+        }
+
+        private static bool TryParseHotkey(string input, out uint modifiers, out uint virtualKey, out string display)
+        {
+            modifiers = 0;
+            virtualKey = 0;
+            display = string.Empty;
+
+            string[] tokens = input.Split('+', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            if (tokens.Length < 2)
+                return false;
+
+            var modifierNames = new List<string>(4);
+            for (int i = 0; i < tokens.Length - 1; i++)
+            {
+                uint modifier;
+                string modifierName;
+                switch (tokens[i].ToUpperInvariant())
+                {
+                    case "CTRL":
+                    case "CONTROL":
+                        modifier = MOD_CONTROL;
+                        modifierName = "Ctrl";
+                        break;
+                    case "ALT":
+                        modifier = MOD_ALT;
+                        modifierName = "Alt";
+                        break;
+                    case "SHIFT":
+                        modifier = MOD_SHIFT;
+                        modifierName = "Shift";
+                        break;
+                    case "WIN":
+                    case "WINDOWS":
+                        modifier = MOD_WIN;
+                        modifierName = "Win";
+                        break;
+                    default:
+                        return false;
+                }
+
+                if ((modifiers & modifier) != 0)
+                    return false;
+
+                modifiers |= modifier;
+                modifierNames.Add(modifierName);
+            }
+
+            string keyToken = tokens[^1];
+            if (keyToken.Equals("SPACE", StringComparison.OrdinalIgnoreCase))
+                keyToken = nameof(Key.Space);
+
+            if (!Enum.TryParse(keyToken, ignoreCase: true, out Key key) ||
+                !Enum.IsDefined(typeof(Key), key) ||
+                key is Key.None or Key.LeftCtrl or Key.RightCtrl or Key.LeftAlt or Key.RightAlt or
+                    Key.LeftShift or Key.RightShift or Key.LWin or Key.RWin)
+            {
+                return false;
+            }
+
+            virtualKey = (uint)KeyInterop.VirtualKeyFromKey(key);
+            if (virtualKey == 0)
+                return false;
+
+            modifierNames.Add(key == Key.Space ? "Space" : key.ToString());
+            display = string.Join(" + ", modifierNames);
+            return true;
         }
 
         private void ResetHotkeyBtn_Click(object sender, RoutedEventArgs e)
         {
             _isRecordingHotkey = false;
+            ManualHotkeyPanel.Visibility = Visibility.Collapsed;
             _design.HotkeyModifiers = MOD_CONTROL | MOD_ALT;
             _design.HotkeyVirtualKey = 0x20;
             _design.HotkeyDisplay = "Ctrl + Alt + Space";
@@ -1318,16 +1564,19 @@ namespace FastPush
 
             uint mods = 0;
             var parts = new List<string>();
+            bool windowsKeyDown = Keyboard.Modifiers.HasFlag(ModifierKeys.Windows) ||
+                (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 ||
+                (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
 
             if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) { mods |= MOD_CONTROL; parts.Add("Ctrl"); }
             if (Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))     { mods |= MOD_ALT;     parts.Add("Alt"); }
             if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))   { mods |= MOD_SHIFT;   parts.Add("Shift"); }
-            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Windows)) { mods |= MOD_WIN;     parts.Add("Win"); }
+            if (windowsKeyDown)                                   { mods |= MOD_WIN;     parts.Add("Win"); }
 
             bool isFnKey = key >= Key.F1 && key <= Key.F12;
             if (mods == 0 && !isFnKey)
             {
-                RecordHotkeyButton.Content = "Зажмите Ctrl, Alt, Shift или F1–F12";
+                RecordHotkeyButton.Content = "Зажмите Ctrl, Alt, Shift, Win или F1–F12";
                 return;
             }
 
@@ -1541,9 +1790,20 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
         {
             AppConfig config = ReadOrCreateConfig();
             _design = config.Settings ?? new DesignSettings();
+            _design.TileSize = Math.Clamp(double.IsFinite(_design.TileSize) ? _design.TileSize : 150, 90, 180);
+            _design.TileSpacing = Math.Clamp(double.IsFinite(_design.TileSpacing) ? _design.TileSpacing : 14, 0, 24);
+            _design.TileOpacity = Math.Clamp(_design.TileOpacity, 30, 100);
+            _design.GridPreset ??= "Standard";
+            TileSize = _design.TileSize;
+            TileMargin = new Thickness(_design.TileSpacing);
+            Width = Math.Clamp(double.IsFinite(_design.WindowWidth) ? _design.WindowWidth : 1280,
+                MinWidth, Math.Max(MinWidth, SystemParameters.WorkArea.Width));
+            Height = Math.Clamp(double.IsFinite(_design.WindowHeight) ? _design.WindowHeight : 720,
+                MinHeight, Math.Max(MinHeight, SystemParameters.WorkArea.Height));
             ApplyPalette();
 
             _categoriesMap.Clear();
+            _categoryLayouts.Clear();
             _categoryOrder.Clear();
 
             if ((config.Categories == null || config.Categories.Count == 0) && config.Tiles != null && config.Tiles.Count > 0)
@@ -1567,6 +1827,12 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
 
                 var collection = new ObservableCollection<TileViewModel>();
                 collection.CollectionChanged += (_, _) => UpdateEmptyHint();
+                _categoryLayouts[catName] = category.ColumnLayouts?
+                    .Where(profile => profile.Key > 0 && profile.Value != null)
+                    .ToDictionary(
+                        profile => profile.Key,
+                        profile => profile.Value.Where(path => !string.IsNullOrWhiteSpace(path)).ToList())
+                    ?? new Dictionary<int, List<string>>();
 
                 if (category.Tiles != null)
                 {
@@ -1607,7 +1873,12 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
         {
             if (!_categoriesMap.TryGetValue(categoryName, out var tilesCollection)) return;
 
+            if (!string.Equals(_activeCategory, categoryName, StringComparison.OrdinalIgnoreCase))
+                SaveActiveLayoutProfile();
+
             _activeCategory = categoryName;
+            _activeGridColumns = GetCurrentGridColumnCount();
+            ApplyLayoutProfile(categoryName, _activeGridColumns);
             ICollectionView tilesView = CollectionViewSource.GetDefaultView(tilesCollection);
             tilesView.Filter = item =>
                 item is TileViewModel tile &&
@@ -1641,35 +1912,100 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             EmptyStatePanel.Visibility = (current == null || current.Count == 0) ? Visibility.Visible : Visibility.Collapsed;
         }
 
+        private int GetCurrentGridColumnCount()
+        {
+            double availableWidth = TilesScrollViewer?.ViewportWidth ?? 0;
+            if (availableWidth <= 0)
+                availableWidth = Math.Max(1, ActualWidth - 100);
+
+            double spacing = _design.TileSpacing * 2;
+            return Math.Max(1, (int)Math.Floor((availableWidth + spacing) / (TileSize + spacing)));
+        }
+
+        private void SaveActiveLayoutProfile()
+        {
+            if (_isApplyingLayoutProfile || _activeGridColumns <= 0 ||
+                !_categoryLayouts.TryGetValue(_activeCategory, out Dictionary<int, List<string>>? profiles) ||
+                GetActiveTiles() is not ObservableCollection<TileViewModel> tiles)
+            {
+                return;
+            }
+
+            profiles[_activeGridColumns] = tiles.Select(tile => tile.Path).ToList();
+        }
+
+        private void ApplyLayoutProfile(string categoryName, int columns)
+        {
+            if (!_categoryLayouts.TryGetValue(categoryName, out Dictionary<int, List<string>>? profiles) ||
+                !profiles.TryGetValue(columns, out List<string>? paths) ||
+                !_categoriesMap.TryGetValue(categoryName, out ObservableCollection<TileViewModel>? tiles) ||
+                tiles.Count < 2)
+            {
+                return;
+            }
+
+            var byPath = tiles
+                .GroupBy(tile => tile.Path, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+            var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var desiredOrder = new List<TileViewModel>(tiles.Count);
+            foreach (string path in paths)
+            {
+                if (seenPaths.Add(path) && byPath.TryGetValue(path, out TileViewModel? tile))
+                    desiredOrder.Add(tile);
+            }
+            desiredOrder.AddRange(tiles.Where(tile => seenPaths.Add(tile.Path)));
+
+            _isApplyingLayoutProfile = true;
+            try
+            {
+                for (int targetIndex = 0; targetIndex < desiredOrder.Count; targetIndex++)
+                {
+                    if (ReferenceEquals(tiles[targetIndex], desiredOrder[targetIndex])) continue;
+                    int currentIndex = tiles.IndexOf(desiredOrder[targetIndex]);
+                    if (currentIndex >= 0)
+                        tiles.Move(currentIndex, targetIndex);
+                }
+            }
+            finally
+            {
+                _isApplyingLayoutProfile = false;
+            }
+        }
+
+        private void UpdateActiveGridColumnProfile()
+        {
+            if (_isSyncingUI || string.IsNullOrEmpty(_activeCategory)) return;
+
+            int columns = GetCurrentGridColumnCount();
+            if (columns == _activeGridColumns) return;
+
+            SaveActiveLayoutProfile();
+            _activeGridColumns = columns;
+            ApplyLayoutProfile(_activeCategory, columns);
+            _design.WindowWidth = ActualWidth;
+            _design.WindowHeight = ActualHeight;
+            _resizeSaveTimer.Stop();
+            _resizeSaveTimer.Start();
+        }
+
+        private void Window_SizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            if (_isSyncingUI) return;
+
+            UpdateActiveGridColumnProfile();
+            _design.WindowWidth = ActualWidth;
+            _design.WindowHeight = ActualHeight;
+            _resizeSaveTimer.Stop();
+            _resizeSaveTimer.Start();
+        }
+
         private void SaveConfiguration()
         {
             try
             {
                 Directory.CreateDirectory(_dataDir);
-
-                var configToSave = new AppConfig
-                {
-                    Settings = _design,
-                    Categories = _categoryOrder.Select(catName => new CategoryConfig
-                    {
-                        Name = catName,
-                        Tiles = _categoriesMap[catName].Select(t => new TileConfig
-                        {
-                            Name = t.Name,
-                            Path = t.Path,
-                            Icon = t.CustomIconPath
-                        }).ToList()
-                    }).ToList(),
-                    Tiles = null
-                };
-
-                var saveOptions = new JsonSerializerOptions
-                {
-                    WriteIndented = true,
-                    Encoder = JavaScriptEncoder.Create(UnicodeRanges.BasicLatin, UnicodeRanges.Cyrillic)
-                };
-
-                File.WriteAllText(_configPath, JsonSerializer.Serialize(configToSave, saveOptions));
+                File.WriteAllText(_configPath, JsonSerializer.Serialize(CreateConfigurationSnapshot(), CreateWriteOptions()));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
             {
@@ -1677,6 +2013,44 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
                                 "Nook", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
+
+        private AppConfig CreateConfigurationSnapshot()
+        {
+            SaveActiveLayoutProfile();
+            _design.WindowWidth = ActualWidth;
+            _design.WindowHeight = ActualHeight;
+
+            return new AppConfig
+            {
+                Settings = _design,
+                Categories = _categoryOrder.Select(categoryName => new CategoryConfig
+                {
+                    Name = categoryName,
+                    Tiles = _categoriesMap[categoryName].Select(tile => new TileConfig
+                    {
+                        Name = tile.Name,
+                        Path = tile.Path,
+                        Icon = tile.CustomIconPath
+                    }).ToList(),
+                    ColumnLayouts = _categoryLayouts.TryGetValue(categoryName, out Dictionary<int, List<string>>? layouts)
+                        ? layouts.ToDictionary(profile => profile.Key, profile => profile.Value.ToList())
+                        : new Dictionary<int, List<string>>()
+                }).ToList()
+            };
+        }
+
+        private static JsonSerializerOptions CreateWriteOptions() => new()
+        {
+            WriteIndented = true,
+            Encoder = JavaScriptEncoder.Create(UnicodeRanges.BasicLatin, UnicodeRanges.Cyrillic)
+        };
+
+        private static JsonSerializerOptions CreateReadOptions() => new()
+        {
+            PropertyNameCaseInsensitive = true,
+            ReadCommentHandling = JsonCommentHandling.Skip,
+            AllowTrailingCommas = true
+        };
 
         private AppConfig ReadOrCreateConfig()
         {
@@ -1704,12 +2078,7 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             try
             {
                 string jsonContent = File.ReadAllText(_configPath);
-                var readOptions = new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true,
-                    ReadCommentHandling = JsonCommentHandling.Skip,
-                    AllowTrailingCommas = true
-                };
+                JsonSerializerOptions readOptions = CreateReadOptions();
 
                 return JsonSerializer.Deserialize<AppConfig>(jsonContent, readOptions)
                     ?? throw new JsonException("Файл конфигурации не содержит объекта настроек.");
@@ -2087,10 +2456,260 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             TileViewModel? tile = GetTileFromMenuItem(sender);
             if (tile == null) return;
 
-            if (Directory.Exists(tile.Path))
-                Process.Start(new ProcessStartInfo { FileName = "explorer.exe", Arguments = $"\"{tile.Path}\"", UseShellExecute = true });
-            else if (File.Exists(tile.Path))
-                Process.Start(new ProcessStartInfo { FileName = "explorer.exe", Arguments = $"/select,\"{tile.Path}\"", UseShellExecute = true });
+            bool isDirectory = Directory.Exists(tile.Path);
+            if (!isDirectory && !File.Exists(tile.Path))
+            {
+                CheckTileAvailability(tile);
+                return;
+            }
+
+            try
+            {
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    UseShellExecute = true
+                };
+                startInfo.ArgumentList.Add(isDirectory ? tile.Path : $"/select,{tile.Path}");
+                Process.Start(startInfo);
+            }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or ArgumentException)
+            {
+                MessageBox.Show($"Не удалось открыть расположение плитки:\n{ex.Message}", "Nook",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void CopyTilePath_Click(object sender, RoutedEventArgs e)
+        {
+            TileViewModel? tile = GetTileFromMenuItem(sender);
+            if (tile == null) return;
+
+            if (string.IsNullOrWhiteSpace(tile.Path))
+            {
+                MessageBox.Show("У этой плитки не указан путь.", "Nook",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                Clipboard.SetText(tile.Path);
+            }
+            catch (Exception ex) when (ex is ExternalException or InvalidOperationException)
+            {
+                MessageBox.Show($"Не удалось скопировать путь:\n{ex.Message}", "Nook",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void TileProperties_Click(object sender, RoutedEventArgs e)
+        {
+            TileViewModel? tile = GetTileFromMenuItem(sender);
+            if (tile == null) return;
+
+            string category = _categoriesMap.FirstOrDefault(pair => pair.Value.Contains(tile)).Key ?? "—";
+            string status = GetTileAvailabilityDescription(tile.Path);
+            MessageBox.Show(
+                $"Название: {tile.Name}\nКатегория: {category}\nПуть: {tile.Path}\nДоступность: {status}\nИконка: {(string.IsNullOrWhiteSpace(tile.CustomIconPath) ? "по умолчанию" : tile.CustomIconPath)}",
+                "Свойства плитки",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+
+        private void CheckTileAvailability_Click(object sender, RoutedEventArgs e)
+        {
+            TileViewModel? tile = GetTileFromMenuItem(sender);
+            if (tile != null)
+                CheckTileAvailability(tile);
+        }
+
+        private void CheckTileAvailability(TileViewModel tile)
+        {
+            string status = GetTileAvailabilityDescription(tile.Path);
+            MessageBox.Show(
+                $"Плитка «{tile.Name}»:\n{tile.Path}\n\n{status}",
+                "Проверка доступности",
+                MessageBoxButton.OK,
+                status == "Путь не найден." ? MessageBoxImage.Warning : MessageBoxImage.Information);
+        }
+
+        private static string GetTileAvailabilityDescription(string path)
+        {
+            if (File.Exists(path) || Directory.Exists(path))
+                return "Файл или папка доступны.";
+
+            if (Uri.TryCreate(path, UriKind.Absolute, out Uri? uri) &&
+                uri.IsAbsoluteUri &&
+                !uri.IsFile)
+            {
+                return "Ссылка или URI сохранены; наличие внешнего обработчика проверить нельзя.";
+            }
+
+            return "Путь не найден.";
+        }
+
+        private void ExportConfiguration_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new SaveFileDialog
+            {
+                Title = "Экспорт резервной копии Nook",
+                Filter = "Файл конфигурации Nook (*.json)|*.json",
+                DefaultExt = ".json",
+                AddExtension = true,
+                FileName = $"Nook-backup-{DateTime.Now:yyyyMMdd-HHmmss}.json"
+            };
+
+            if (dialog.ShowDialog(this) != true) return;
+
+            try
+            {
+                string json = JsonSerializer.Serialize(CreateConfigurationSnapshot(), CreateWriteOptions());
+                File.WriteAllText(dialog.FileName, json);
+                MessageBox.Show("Резервная копия успешно экспортирована.", "Nook",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+            {
+                MessageBox.Show($"Не удалось экспортировать конфигурацию:\n{ex.Message}", "Nook",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void ImportConfiguration_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new OpenFileDialog
+            {
+                Title = "Импорт резервной копии Nook",
+                Filter = "Файл конфигурации Nook (*.json)|*.json|Все файлы (*.*)|*.*",
+                CheckFileExists = true
+            };
+
+            if (dialog.ShowDialog(this) != true) return;
+
+            AppConfig importedConfig;
+            try
+            {
+                string json = File.ReadAllText(dialog.FileName);
+                importedConfig = JsonSerializer.Deserialize<AppConfig>(json, CreateReadOptions())
+                    ?? throw new JsonException("Файл не содержит конфигурацию.");
+
+                if (!ValidateImportedConfiguration(importedConfig, out string validationError))
+                    throw new JsonException(validationError);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+            {
+                MessageBox.Show($"Не удалось импортировать конфигурацию:\n{ex.Message}", "Nook",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            MessageBoxResult confirmation = MessageBox.Show(
+                "Импорт заменит текущие категории, плитки и настройки. Перед заменой будет создана резервная копия текущего config.json. Продолжить?",
+                "Импорт конфигурации",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+            if (confirmation != MessageBoxResult.Yes) return;
+
+            string temporaryPath = System.IO.Path.Combine(_dataDir, $"config-import-{Guid.NewGuid():N}.tmp");
+            string backupPath = System.IO.Path.Combine(_dataDir, $"config-backup-{DateTime.Now:yyyyMMdd-HHmmss-fff}-{Guid.NewGuid():N}.json");
+            bool hadExistingConfig = File.Exists(_configPath);
+
+            try
+            {
+                Directory.CreateDirectory(_dataDir);
+                if (hadExistingConfig)
+                    File.Copy(_configPath, backupPath, overwrite: false);
+
+                string normalizedJson = JsonSerializer.Serialize(importedConfig, CreateWriteOptions());
+                File.WriteAllText(temporaryPath, normalizedJson);
+                File.Move(temporaryPath, _configPath, overwrite: true);
+
+                LoadConfiguration();
+                SyncSettingsUI();
+                UpdateBackgroundAnimations();
+                RegisterCurrentHotkey(showWarningOnFail: true);
+
+                string backupMessage = hadExistingConfig
+                    ? $"\nТекущая конфигурация сохранена: {backupPath}"
+                    : string.Empty;
+                MessageBox.Show($"Конфигурация успешно импортирована.{backupMessage}", "Nook",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
+            {
+                try
+                {
+                    if (hadExistingConfig && File.Exists(backupPath))
+                        File.Copy(backupPath, _configPath, overwrite: true);
+                    else if (!hadExistingConfig && File.Exists(_configPath))
+                        File.Delete(_configPath);
+
+                    LoadConfiguration();
+                    SyncSettingsUI();
+                    UpdateBackgroundAnimations();
+                    RegisterCurrentHotkey(showWarningOnFail: false);
+                }
+                catch (Exception restoreException) when (restoreException is IOException or UnauthorizedAccessException or JsonException)
+                {
+                    MessageBox.Show($"Не удалось завершить импорт ({ex.Message}) и восстановить прежнюю конфигурацию ({restoreException.Message}).",
+                        "Nook", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                MessageBox.Show($"Импорт не выполнен. Предыдущая конфигурация восстановлена.\n{ex.Message}", "Nook",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                try
+                {
+                    if (File.Exists(temporaryPath))
+                        File.Delete(temporaryPath);
+                }
+                catch (Exception cleanupException) when (cleanupException is IOException or UnauthorizedAccessException)
+                {
+                    MessageBox.Show($"Не удалось удалить временный файл импорта:\n{cleanupException.Message}", "Nook",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+            }
+        }
+
+        private static bool ValidateImportedConfiguration(AppConfig config, out string error)
+        {
+            if (config.Settings == null)
+                config.Settings = new DesignSettings();
+
+            if ((config.Categories == null || config.Categories.Count == 0) &&
+                (config.Tiles == null || config.Tiles.Count == 0))
+            {
+                error = "В резервной копии нет ни категорий, ни плиток.";
+                return false;
+            }
+
+            if (config.Categories != null)
+            {
+                foreach (CategoryConfig? category in config.Categories)
+                {
+                    if (category == null)
+                    {
+                        error = "В списке категорий обнаружена пустая запись.";
+                        return false;
+                    }
+
+                    if (category.Tiles != null && category.Tiles.Any(tile => tile == null))
+                    {
+                        error = $"Категория «{category.Name}» содержит некорректную плитку.";
+                        return false;
+                    }
+
+                    if (category.ColumnLayouts == null)
+                        category.ColumnLayouts = new Dictionary<int, List<string>>();
+                }
+            }
+
+            error = string.Empty;
+            return true;
         }
 
         private void DeleteTile_Click(object sender, RoutedEventArgs e)

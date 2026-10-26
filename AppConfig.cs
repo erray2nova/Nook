@@ -24,6 +24,13 @@ namespace FastPush
         // 0% (прозрачное размытое стекло) .. 100% (плотный матовый корпус)
         public int BlurOpacity { get; set; } = 72;
 
+        public double TileSize { get; set; } = 150;
+        public double TileSpacing { get; set; } = 14;
+        public int TileOpacity { get; set; } = 100;
+        public string GridPreset { get; set; } = "Standard";
+        public double WindowWidth { get; set; } = 1280;
+        public double WindowHeight { get; set; } = 720;
+
         // Combo | Aurora | Grid | Waves | Bokeh | None
         public string BackgroundMode { get; set; } = "Combo";
 
@@ -42,6 +49,7 @@ namespace FastPush
     {
         public string Name { get; set; } = string.Empty;
         public List<TileConfig> Tiles { get; set; } = new();
+        public Dictionary<int, List<string>> ColumnLayouts { get; set; } = new();
     }
 
     public class TileConfig

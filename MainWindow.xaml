@@ -5,15 +5,18 @@
         Title="Nook"
         Width="1280"
         Height="720"
+        MinWidth="800"
+        MinHeight="560"
         WindowStartupLocation="CenterScreen"
         WindowStyle="None"
         AllowsTransparency="True"
         Background="Transparent"
-        ResizeMode="NoResize"
+        ResizeMode="CanResizeWithGrip"
         Topmost="True"
         ShowInTaskbar="False"
         KeyDown="Window_KeyDown"
-        Deactivated="Window_Deactivated">
+        Deactivated="Window_Deactivated"
+        SizeChanged="Window_SizeChanged">
 
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
@@ -414,9 +417,9 @@
 
         <!-- Плитка приложения (hover-свечение + iPhone-покачивание в режиме редактирования) -->
         <Style x:Key="TileButtonStyle" TargetType="Button">
-            <Setter Property="Width" Value="150"/>
-            <Setter Property="Height" Value="150"/>
-            <Setter Property="Margin" Value="14"/>
+            <Setter Property="Width" Value="{Binding TileSize, RelativeSource={RelativeSource AncestorType=Window}}"/>
+            <Setter Property="Height" Value="{Binding TileSize, RelativeSource={RelativeSource AncestorType=Window}}"/>
+            <Setter Property="Margin" Value="{Binding TileMargin, RelativeSource={RelativeSource AncestorType=Window}}"/>
             <Setter Property="Background" Value="{DynamicResource TileSurfaceBrush}"/>
             <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}"/>
             <Setter Property="Cursor" Value="Hand"/>
@@ -789,7 +792,7 @@
                             <ItemsControl x:Name="TilesContainer" HorizontalAlignment="Stretch" VerticalAlignment="Center">
                                 <ItemsControl.ItemsPanel>
                                     <ItemsPanelTemplate>
-                                        <WrapPanel MaxWidth="1140" HorizontalAlignment="Center"/>
+                                        <WrapPanel HorizontalAlignment="Center"/>
                                     </ItemsPanelTemplate>
                                 </ItemsControl.ItemsPanel>
 
@@ -807,10 +810,19 @@
 
                                             <Button.ContextMenu>
                                                 <ContextMenu>
-                                                    <MenuItem Header="Изменить название / путь..." Click="EditTile_Click"/>
+                                                    <MenuItem Header="Изменить название / исправить путь..." Click="EditTile_Click"/>
                                                     <MenuItem Header="Переименовать" Click="RenameTile_Click"/>
                                                     <MenuItem Header="Сменить иконку..." Click="ChangeTileIcon_Click"/>
+                                                    <MenuItem Header="Сведения о плитке..." Click="TileProperties_Click"/>
+                                                    <MenuItem Header="Проверить доступность" Click="CheckTileAvailability_Click"/>
+                                                    <Separator/>
+                                                    <MenuItem Header="Путь:"
+                                                              IsEnabled="False"/>
+                                                    <MenuItem IsEnabled="False"
+                                                              Header="{Binding PlacementTarget.Tag.Path, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                                    <Separator/>
                                                     <MenuItem Header="Открыть расположение файла" Click="OpenFileLocation_Click"/>
+                                                    <MenuItem Header="Скопировать путь" Click="CopyTilePath_Click"/>
                                                     <Separator/>
                                                     <MenuItem Header="Удалить плитку" Click="DeleteTile_Click"/>
                                                 </ContextMenu>
@@ -1088,6 +1100,56 @@
                                             Margin="0,0,0,18"
                                             ValueChanged="BlurSlider_ValueChanged"/>
 
+                                    <TextBlock Text="Размер и плотность сетки"
+                                               Foreground="{DynamicResource PrimaryTextBrush}"
+                                               FontSize="13.5"
+                                               FontWeight="SemiBold"
+                                               Margin="2,0,0,6"/>
+                                    <UniformGrid x:Name="GridPresetsPanel" Columns="3" Margin="-3,0,-3,10">
+                                        <RadioButton Content="Стандартная" Tag="Standard" GroupName="GridPresets" Style="{StaticResource ModePillRadioStyle}" Click="GridPreset_Click"/>
+                                        <RadioButton Content="Компактная" Tag="Compact" GroupName="GridPresets" Style="{StaticResource ModePillRadioStyle}" Click="GridPreset_Click"/>
+                                        <RadioButton Content="Плотная" Tag="Dense" GroupName="GridPresets" Style="{StaticResource ModePillRadioStyle}" Click="GridPreset_Click"/>
+                                    </UniformGrid>
+
+                                    <Grid Margin="2,0,2,2">
+                                        <TextBlock Text="Размер плитки"
+                                                   Foreground="{DynamicResource PrimaryTextBrush}"
+                                                   FontSize="12.5"/>
+                                        <TextBlock x:Name="TileSizeValueText"
+                                                   Foreground="{DynamicResource AccentBrush}"
+                                                   FontSize="12.5"
+                                                   FontWeight="Bold"
+                                                   HorizontalAlignment="Right"/>
+                                    </Grid>
+                                    <Slider x:Name="TileSizeSlider" Minimum="90" Maximum="180" TickFrequency="1"
+                                            IsSnapToTickEnabled="True" Margin="0,0,0,8" ValueChanged="GridSlider_ValueChanged"/>
+
+                                    <Grid Margin="2,0,2,2">
+                                        <TextBlock Text="Расстояние между плитками"
+                                                   Foreground="{DynamicResource PrimaryTextBrush}"
+                                                   FontSize="12.5"/>
+                                        <TextBlock x:Name="TileSpacingValueText"
+                                                   Foreground="{DynamicResource AccentBrush}"
+                                                   FontSize="12.5"
+                                                   FontWeight="Bold"
+                                                   HorizontalAlignment="Right"/>
+                                    </Grid>
+                                    <Slider x:Name="TileSpacingSlider" Minimum="0" Maximum="24" TickFrequency="1"
+                                            IsSnapToTickEnabled="True" Margin="0,0,0,8" ValueChanged="GridSlider_ValueChanged"/>
+
+                                    <Grid Margin="2,0,2,2">
+                                        <TextBlock Text="Непрозрачность плиток"
+                                                   Foreground="{DynamicResource PrimaryTextBrush}"
+                                                   FontSize="12.5"/>
+                                        <TextBlock x:Name="TileOpacityValueText"
+                                                   Foreground="{DynamicResource AccentBrush}"
+                                                   FontSize="12.5"
+                                                   FontWeight="Bold"
+                                                   HorizontalAlignment="Right"/>
+                                    </Grid>
+                                    <Slider x:Name="TileOpacitySlider" Minimum="30" Maximum="100" TickFrequency="1"
+                                            IsSnapToTickEnabled="True" Margin="0,0,0,18" ValueChanged="TileOpacitySlider_ValueChanged"/>
+
                                     <TextBlock Text="Анимация заднего плана"
                                                Foreground="{DynamicResource PrimaryTextBrush}"
                                                FontSize="13.5"
@@ -1128,6 +1190,7 @@
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
 
                                         <Button x:Name="RecordHotkeyButton"
@@ -1160,6 +1223,14 @@
                                         </Button>
 
                                         <Button Grid.Column="1"
+                                                Content="⌨"
+                                                ToolTip="Ввести сочетание вручную"
+                                                Cursor="Hand"
+                                                Margin="0,0,8,0"
+                                                Style="{StaticResource IconButtonStyle}"
+                                                Click="ManualHotkeyButton_Click"/>
+
+                                        <Button Grid.Column="2"
                                                 Content="↺"
                                                 ToolTip="Вернуть Ctrl + Alt + Space"
                                                 Width="40"
@@ -1167,6 +1238,32 @@
                                                 Style="{StaticResource IconButtonStyle}"
                                                 Click="ResetHotkeyBtn_Click"/>
                                     </Grid>
+
+                                    <StackPanel x:Name="ManualHotkeyPanel" Visibility="Collapsed" Margin="0,-10,0,18">
+                                        <TextBlock Text="Введите сочетание, например: Shift + Win + A"
+                                                   Foreground="{DynamicResource SecondaryTextBrush}"
+                                                   FontSize="11.5"
+                                                   Margin="2,0,0,6"/>
+                                        <TextBox x:Name="ManualHotkeyTextBox"
+                                                 Background="{DynamicResource InputSurfaceBrush}"
+                                                 Foreground="{DynamicResource PrimaryTextBrush}"
+                                                 CaretBrush="{DynamicResource AccentBrush}"
+                                                 FontSize="13.5"
+                                                 Padding="10,8"
+                                                 Margin="0,0,0,8"
+                                                 KeyDown="ManualHotkeyTextBox_KeyDown"/>
+                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                            <Button Content="Отмена"
+                                                    Cursor="Hand"
+                                                    Margin="0,0,8,0"
+                                                    Style="{StaticResource IconButtonStyle}"
+                                                    Click="CancelManualHotkey_Click"/>
+                                            <Button Content="Сохранить"
+                                                    Cursor="Hand"
+                                                    Style="{StaticResource PrimaryActionButtonStyle}"
+                                                    Click="SaveManualHotkey_Click"/>
+                                        </StackPanel>
+                                    </StackPanel>
 
                                     <Grid Margin="2,0,2,16">
                                         <Grid.ColumnDefinitions>
@@ -1240,6 +1337,8 @@
                                     <Button Content="📁 Создать новую категорию" Style="{StaticResource SecondaryActionButtonStyle}" Click="AddCategory_Click"/>
                                     <Button Content="📂 Открыть папку конфига (AppData\Local\Nook)" Style="{StaticResource SecondaryActionButtonStyle}" Click="OpenConfigFolder_Click"/>
                                     <Button Content="🔄 Перезагрузить config.json" Style="{StaticResource SecondaryActionButtonStyle}" Click="MenuReload_Click"/>
+                                    <Button Content="⬆ Экспортировать резервную копию..." Style="{StaticResource SecondaryActionButtonStyle}" Click="ExportConfiguration_Click"/>
+                                    <Button Content="⬇ Импортировать резервную копию..." Style="{StaticResource SecondaryActionButtonStyle}" Click="ImportConfiguration_Click"/>
                                     <Button Content="↺ Сбросить настройки по умолчанию" Style="{StaticResource SecondaryActionButtonStyle}" Click="ResetDesign_Click"/>
                                 </StackPanel>
                             </Grid>
