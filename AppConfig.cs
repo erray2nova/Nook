@@ -20,11 +20,22 @@ namespace FastPush
         // Black | White | Espresso | Matcha
         public string Theme { get; set; } = "Black";
         public string AccentColor { get; set; } = "#EC4899";
-        public int BlurOpacity { get; set; } = 82;
-        public bool AnimateBubbles { get; set; } = true;
-        public bool AnimateGrid { get; set; } = true;
+
+        // 0% (прозрачное размытое стекло) .. 100% (плотный матовый корпус)
+        public int BlurOpacity { get; set; } = 72;
+
+        // Combo | Aurora | Grid | Waves | Bokeh | None
+        public string BackgroundMode { get; set; } = "Combo";
+
+        public bool ShowClock { get; set; } = true;
+        public bool HideOnDeactivate { get; set; } = true;
         public bool HideAfterLaunch { get; set; } = true;
         public bool SmoothAnimations { get; set; } = true;
+
+        // Глобальный хоткей (по умолчанию Ctrl + Alt + Space)
+        public uint HotkeyModifiers { get; set; } = 0x0002 | 0x0001;
+        public uint HotkeyVirtualKey { get; set; } = 0x20;
+        public string HotkeyDisplay { get; set; } = "Ctrl + Alt + Space";
     }
 
     public class CategoryConfig
@@ -43,23 +54,28 @@ namespace FastPush
     public class TileViewModel : INotifyPropertyChanged
     {
         private string _name = string.Empty;
+        private string _path = string.Empty;
+        private ImageSource? _iconSource;
 
         public string Name
         {
             get => _name;
-            set
-            {
-                if (_name != value)
-                {
-                    _name = value;
-                    OnPropertyChanged();
-                }
-            }
+            set { if (_name != value) { _name = value; OnPropertyChanged(); } }
         }
 
-        public string Path { get; set; } = string.Empty;
+        public string Path
+        {
+            get => _path;
+            set { if (_path != value) { _path = value; OnPropertyChanged(); } }
+        }
+
         public string CustomIconPath { get; set; } = string.Empty;
-        public ImageSource? IconSource { get; set; }
+
+        public ImageSource? IconSource
+        {
+            get => _iconSource;
+            set { if (_iconSource != value) { _iconSource = value; OnPropertyChanged(); } }
+        }
 
         public event PropertyChangedEventHandler? PropertyChanged;
 

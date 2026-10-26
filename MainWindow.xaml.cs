@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -16,19 +17,32 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
+using System.Windows.Shapes;
+using System.Windows.Threading;
 using Microsoft.Win32;
 
 namespace FastPush
 {
     public partial class MainWindow : Window
     {
+        // DependencyProperty для мгновенного включения iOS-покачивания плиток и вкладок в XAML
+        public static readonly DependencyProperty IsEditModeProperty =
+            DependencyProperty.Register(nameof(IsEditMode), typeof(bool), typeof(MainWindow), new PropertyMetadata(false));
+
+        public bool IsEditMode
+        {
+            get => (bool)GetValue(IsEditModeProperty);
+            set => SetValue(IsEditModeProperty, value);
+        }
+
         // --- 1. WIN API: ГЛОБАЛЬНЫЙ ХОТКЕЙ ---
         private const int HOTKEY_ID = 9000;
         private const int WM_HOTKEY = 0x0312;
         private const uint MOD_ALT = 0x0001;
         private const uint MOD_CONTROL = 0x0002;
+        private const uint MOD_SHIFT = 0x0004;
+        private const uint MOD_WIN = 0x0008;
         private const uint MOD_NOREPEAT = 0x4000;
-        private const uint VK_SPACE = 0x20;
 
         [DllImport("user32.dll")]
         private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
@@ -55,7 +69,7 @@ namespace FastPush
         {
             public AccentState AccentState;
             public uint AccentFlags;
-            public uint GradientColor; // Формат AABBGGRR
+            public uint GradientColor;
             public uint AnimationId;
         }
 
@@ -89,9 +103,14 @@ namespace FastPush
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool DestroyIcon(IntPtr hIcon);
 
-        // --- СОСТОЯНИЕ ЛАУНЧЕРА ---
+        // --- СОСТОЯНИЕ И ПУТИ (%LocalAppData%\Nook) ---
         private const string RUN_REGISTRY_KEY = @"Software\Microsoft\Windows\CurrentVersion\Run";
-        private const string APP_REGISTRY_NAME = "FastPush";
+        private const string APP_REGISTRY_NAME = "Nook";
+        private const string DRAG_TILE_FORMAT = "NookInternalTileDrag";
+        private const string DRAG_CATEGORY_FORMAT = "NookInternalCategoryDrag";
+
+        private readonly string _dataDir;
+        private readonly string _configPath;
 
         private IntPtr _windowHandle;
         private HwndSource? _source;
@@ -99,9 +118,22 @@ namespace FastPush
         private bool _isAnimatingHide = false;
         private bool _isDrawerOpen = false;
         private bool _isSyncingUI = true;
-        private uint _acrylicTintBgr = 0x120E0E;
+        private bool _suppressDeactivateHide = false;
+        private bool _isRecordingHotkey = false;
+        private uint _acrylicTintBgr = 0x130E0E;
 
-        private readonly string _configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
+        // Перетаскивание плиток и вкладок
+        private Point _tileDragStartPoint;
+        private TileViewModel? _potentialDraggedTile;
+        private bool _isInternalDragging = false;
+        private DateTime _lastTileSwapUtc = DateTime.MinValue;
+
+        private Point _catDragStartPoint;
+        private string? _potentialDraggedCategory;
+
+        // Анимация Боке и Часы
+        private readonly List<(TranslateTransform MoveY, TranslateTransform SwayX, double SpeedSec, double SwayAmount, double StartY)> _bokehParticles = new();
+        private readonly DispatcherTimer _clockTimer = new();
 
         private DesignSettings _design = new();
         private readonly Dictionary<string, ObservableCollection<TileViewModel>> _categoriesMap = new();
@@ -110,11 +142,22 @@ namespace FastPush
 
         public MainWindow()
         {
+            // Хранение конфига строго в %LocalAppData%\Nook\config.json
+            _dataDir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Nook");
+            Directory.CreateDirectory(_dataDir);
+            _configPath = System.IO.Path.Combine(_dataDir, "config.json");
+            MigrateLegacyConfigIfNeeded();
+
             InitializeComponent();
             TrayIcon.Icon = System.Drawing.SystemIcons.Application;
+            InitializeBokehParticles();
 
             LoadConfiguration();
             SyncSettingsUI();
+
+            _clockTimer.Interval = TimeSpan.FromSeconds(5);
+            _clockTimer.Tick += (_, _) => UpdateClockText();
+            UpdateClockText();
 
             string[] args = Environment.GetCommandLineArgs();
             if (args.Any(a => string.Equals(a, "--autostart", StringComparison.OrdinalIgnoreCase)))
@@ -122,6 +165,7 @@ namespace FastPush
                 Loaded += (_, _) =>
                 {
                     StopBackgroundAnimations();
+                    _clockTimer.Stop();
                     this.Hide();
                 };
             }
@@ -129,10 +173,22 @@ namespace FastPush
             {
                 Loaded += (_, _) =>
                 {
+                    _clockTimer.Start();
                     UpdateBackgroundAnimations();
                     PlayShowAnimation();
                 };
             }
+        }
+
+        private void MigrateLegacyConfigIfNeeded()
+        {
+            try
+            {
+                string legacyPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
+                if (!File.Exists(_configPath) && File.Exists(legacyPath))
+                    File.Copy(legacyPath, _configPath);
+            }
+            catch { }
         }
 
         protected override void OnSourceInitialized(EventArgs e)
@@ -145,23 +201,22 @@ namespace FastPush
 
             UpdateAcrylicBlur();
 
-            int cornerPreference = 2; // Аппаратное скругление углов Windows 11
+            int cornerPreference = 2; // Аппаратное скругление углов DWM Windows 11
             DwmSetWindowAttribute(_windowHandle, 33, ref cornerPreference, sizeof(int));
 
-            bool isRegistered = RegisterHotKey(
-                _windowHandle,
-                HOTKEY_ID,
-                MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
-                VK_SPACE);
-
-            if (!isRegistered)
-            {
-                MessageBox.Show("Не удалось зарегистрировать хоткей Ctrl + Alt + Space. Возможно, он уже занят.",
-                                "Nook", MessageBoxButton.OK, MessageBoxImage.Warning);
-            }
+            RegisterCurrentHotkey(showWarningOnFail: true);
         }
 
-        // --- ДВИЖОК ПАЛИТРЫ: 4 ТЕМЫ + 8 АКЦЕНТОВ + АДАПТИВНЫЙ ГРАДИЕНТ ---
+        // --- ЧАСЫ В ШАПКЕ ---
+
+        private void UpdateClockText()
+        {
+            DateTime now = DateTime.Now;
+            ClockTimeText.Text = now.ToString("HH:mm");
+            ClockDateText.Text = now.ToString("ddd, d MMM", new CultureInfo("ru-RU"));
+        }
+
+        // --- ДВИЖОК ТЕМ, АКЦЕНТОВ И ПРОЗРАЧНОСТИ СТЕКЛА (0% – 100%) ---
 
         private void ApplyPalette()
         {
@@ -171,12 +226,11 @@ namespace FastPush
 
             bool isLight = string.Equals(_design.Theme, "White", StringComparison.OrdinalIgnoreCase);
 
-            // Контрастный текст на кнопках и активных вкладках
             double luminance = accent.R * 0.299 + accent.G * 0.587 + accent.B * 0.114;
             Color accentFg = luminance > 180 ? Color.FromRgb(20, 20, 24) : Colors.White;
 
             SetSolidBrush("AccentBrush", accent);
-            SetSolidBrush("AccentSoftBrush", Color.FromArgb(isLight ? (byte)0x26 : (byte)0x30, accent.R, accent.G, accent.B));
+            SetSolidBrush("AccentSoftBrush", Color.FromArgb(isLight ? (byte)0x26 : (byte)0x32, accent.R, accent.G, accent.B));
             SetSolidBrush("AccentForegroundBrush", accentFg);
 
             Color baseBg;
@@ -190,51 +244,51 @@ namespace FastPush
                     midBg = Color.FromRgb(238, 240, 246);
                     SetSolidBrush("PrimaryTextBrush", Color.FromRgb(24, 24, 30));
                     SetSolidBrush("SecondaryTextBrush", Color.FromRgb(104, 106, 120));
-                    SetSolidBrush("HeaderSurfaceBrush", Color.FromArgb(0xB8, 255, 255, 255));
-                    SetSolidBrush("DrawerSurfaceBrush", Color.FromArgb(0xF6, 250, 250, 253));
-                    SetSolidBrush("CardSurfaceBrush", Color.FromArgb(0xAA, 255, 255, 255));
-                    SetSolidBrush("TileSurfaceBrush", Color.FromArgb(0xC8, 255, 255, 255));
-                    SetSolidBrush("TileHoverSurfaceBrush", Color.FromArgb(0xF2, 255, 255, 255));
-                    SetSolidBrush("InputSurfaceBrush", Color.FromArgb(0xCC, 236, 238, 244));
+                    SetSolidBrush("HeaderSurfaceBrush", Color.FromArgb(0xBC, 255, 255, 255));
+                    SetSolidBrush("DrawerSurfaceBrush", Color.FromArgb(0xF7, 250, 250, 253));
+                    SetSolidBrush("CardSurfaceBrush", Color.FromArgb(0xB2, 255, 255, 255));
+                    SetSolidBrush("TileSurfaceBrush", Color.FromArgb(0xCC, 255, 255, 255));
+                    SetSolidBrush("TileHoverSurfaceBrush", Color.FromArgb(0xF4, 255, 255, 255));
+                    SetSolidBrush("InputSurfaceBrush", Color.FromArgb(0xD2, 236, 238, 244));
                     SetSolidBrush("MenuSurfaceBrush", Color.FromArgb(0xFA, 252, 252, 255));
-                    SetSolidBrush("BorderSubtleBrush", Color.FromArgb(0x20, 15, 18, 28));
-                    SetSolidBrush("GridLineBrush", Color.FromArgb(0x16, accent.R, accent.G, accent.B));
+                    SetSolidBrush("BorderSubtleBrush", Color.FromArgb(0x22, 15, 18, 28));
+                    SetSolidBrush("GridLineBrush", Color.FromArgb(0x18, accent.R, accent.G, accent.B));
                     SetSolidBrush("ScrimBrush", Color.FromArgb(0x38, 15, 18, 28));
                     break;
 
                 case "Espresso":
-                    _acrylicTintBgr = 0x111621; // BGR для теплого кофейного #211611
+                    _acrylicTintBgr = 0x111621;
                     baseBg = Color.FromRgb(26, 18, 14);
                     midBg = Color.FromRgb(38, 26, 20);
                     SetSolidBrush("PrimaryTextBrush", Color.FromRgb(247, 239, 234));
                     SetSolidBrush("SecondaryTextBrush", Color.FromRgb(176, 156, 145));
-                    SetSolidBrush("HeaderSurfaceBrush", Color.FromArgb(0x88, 38, 26, 21));
-                    SetSolidBrush("DrawerSurfaceBrush", Color.FromArgb(0xF5, 30, 20, 16));
-                    SetSolidBrush("CardSurfaceBrush", Color.FromArgb(0x78, 45, 31, 25));
-                    SetSolidBrush("TileSurfaceBrush", Color.FromArgb(0x98, 46, 32, 26));
-                    SetSolidBrush("TileHoverSurfaceBrush", Color.FromArgb(0xCC, 62, 44, 36));
-                    SetSolidBrush("InputSurfaceBrush", Color.FromArgb(0xAA, 54, 38, 30));
+                    SetSolidBrush("HeaderSurfaceBrush", Color.FromArgb(0x8E, 38, 26, 21));
+                    SetSolidBrush("DrawerSurfaceBrush", Color.FromArgb(0xF6, 30, 20, 16));
+                    SetSolidBrush("CardSurfaceBrush", Color.FromArgb(0x82, 45, 31, 25));
+                    SetSolidBrush("TileSurfaceBrush", Color.FromArgb(0x9C, 46, 32, 26));
+                    SetSolidBrush("TileHoverSurfaceBrush", Color.FromArgb(0xCF, 62, 44, 36));
+                    SetSolidBrush("InputSurfaceBrush", Color.FromArgb(0xB0, 54, 38, 30));
                     SetSolidBrush("MenuSurfaceBrush", Color.FromArgb(0xF8, 34, 23, 18));
                     SetSolidBrush("BorderSubtleBrush", Color.FromArgb(0x28, 255, 235, 220));
-                    SetSolidBrush("GridLineBrush", Color.FromArgb(0x14, 255, 225, 205));
+                    SetSolidBrush("GridLineBrush", Color.FromArgb(0x16, 255, 225, 205));
                     SetSolidBrush("ScrimBrush", Color.FromArgb(0x66, 8, 5, 4));
                     break;
 
                 case "Matcha":
-                    _acrylicTintBgr = 0x151E12; // BGR для глубокого матча #121E15
+                    _acrylicTintBgr = 0x151E12;
                     baseBg = Color.FromRgb(16, 27, 20);
                     midBg = Color.FromRgb(23, 39, 29);
                     SetSolidBrush("PrimaryTextBrush", Color.FromRgb(237, 247, 240));
                     SetSolidBrush("SecondaryTextBrush", Color.FromRgb(146, 174, 156));
-                    SetSolidBrush("HeaderSurfaceBrush", Color.FromArgb(0x88, 22, 38, 29));
-                    SetSolidBrush("DrawerSurfaceBrush", Color.FromArgb(0xF5, 18, 31, 23));
-                    SetSolidBrush("CardSurfaceBrush", Color.FromArgb(0x78, 27, 46, 35));
-                    SetSolidBrush("TileSurfaceBrush", Color.FromArgb(0x98, 28, 48, 36));
-                    SetSolidBrush("TileHoverSurfaceBrush", Color.FromArgb(0xCC, 38, 64, 48));
-                    SetSolidBrush("InputSurfaceBrush", Color.FromArgb(0xAA, 32, 54, 41));
+                    SetSolidBrush("HeaderSurfaceBrush", Color.FromArgb(0x8E, 22, 38, 29));
+                    SetSolidBrush("DrawerSurfaceBrush", Color.FromArgb(0xF6, 18, 31, 23));
+                    SetSolidBrush("CardSurfaceBrush", Color.FromArgb(0x82, 27, 46, 35));
+                    SetSolidBrush("TileSurfaceBrush", Color.FromArgb(0x9C, 28, 48, 36));
+                    SetSolidBrush("TileHoverSurfaceBrush", Color.FromArgb(0xCF, 38, 64, 48));
+                    SetSolidBrush("InputSurfaceBrush", Color.FromArgb(0xB0, 32, 54, 41));
                     SetSolidBrush("MenuSurfaceBrush", Color.FromArgb(0xF8, 20, 35, 26));
                     SetSolidBrush("BorderSubtleBrush", Color.FromArgb(0x26, 220, 255, 235));
-                    SetSolidBrush("GridLineBrush", Color.FromArgb(0x14, 210, 255, 225));
+                    SetSolidBrush("GridLineBrush", Color.FromArgb(0x16, 210, 255, 225));
                     SetSolidBrush("ScrimBrush", Color.FromArgb(0x66, 4, 10, 6));
                     break;
 
@@ -244,24 +298,26 @@ namespace FastPush
                     midBg = Color.FromRgb(20, 20, 26);
                     SetSolidBrush("PrimaryTextBrush", Color.FromRgb(245, 245, 248));
                     SetSolidBrush("SecondaryTextBrush", Color.FromRgb(146, 146, 160));
-                    SetSolidBrush("HeaderSurfaceBrush", Color.FromArgb(0x82, 24, 24, 31));
-                    SetSolidBrush("DrawerSurfaceBrush", Color.FromArgb(0xF5, 18, 18, 24));
-                    SetSolidBrush("CardSurfaceBrush", Color.FromArgb(0x72, 28, 28, 36));
-                    SetSolidBrush("TileSurfaceBrush", Color.FromArgb(0x94, 28, 28, 36));
-                    SetSolidBrush("TileHoverSurfaceBrush", Color.FromArgb(0xC8, 40, 40, 52));
-                    SetSolidBrush("InputSurfaceBrush", Color.FromArgb(0xAA, 34, 34, 44));
+                    SetSolidBrush("HeaderSurfaceBrush", Color.FromArgb(0x88, 24, 24, 31));
+                    SetSolidBrush("DrawerSurfaceBrush", Color.FromArgb(0xF6, 18, 18, 24));
+                    SetSolidBrush("CardSurfaceBrush", Color.FromArgb(0x7E, 28, 28, 36));
+                    SetSolidBrush("TileSurfaceBrush", Color.FromArgb(0x98, 28, 28, 36));
+                    SetSolidBrush("TileHoverSurfaceBrush", Color.FromArgb(0xCC, 40, 40, 52));
+                    SetSolidBrush("InputSurfaceBrush", Color.FromArgb(0xAE, 34, 34, 44));
                     SetSolidBrush("MenuSurfaceBrush", Color.FromArgb(0xF8, 22, 22, 29));
                     SetSolidBrush("BorderSubtleBrush", Color.FromArgb(0x24, 255, 255, 255));
-                    SetSolidBrush("GridLineBrush", Color.FromArgb(0x11, 255, 255, 255));
+                    SetSolidBrush("GridLineBrush", Color.FromArgb(0x13, 255, 255, 255));
                     SetSolidBrush("ScrimBrush", Color.FromArgb(0x68, 0, 0, 0));
                     break;
             }
 
-            // Градиент фона из базовой палитры темы и выбранного акцентного цвета
-            byte surfaceAlpha = (byte)Math.Clamp((int)Math.Round(_design.BlurOpacity * 2.25), 70, 235);
+            // Честный диапазон 0% (прозрачное стекло, alpha=8) .. 100% (матовый корпус, alpha=250)
+            double t = Math.Clamp(_design.BlurOpacity / 100.0, 0.0, 1.0);
+            byte surfaceAlpha = (byte)Math.Clamp((int)Math.Round(8 + t * 242), 8, 250);
+
             Color startTint = BlendColor(baseBg, accent, isLight ? 0.14 : 0.12, surfaceAlpha);
             Color middleTint = Color.FromArgb(surfaceAlpha, midBg.R, midBg.G, midBg.B);
-            Color endTint = BlendColor(baseBg, accent, isLight ? 0.26 : 0.24, surfaceAlpha);
+            Color endTint = BlendColor(baseBg, accent, isLight ? 0.28 : 0.25, surfaceAlpha);
 
             var bgGradient = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 1) };
             bgGradient.GradientStops.Add(new GradientStop(startTint, 0.0));
@@ -270,18 +326,20 @@ namespace FastPush
             bgGradient.Freeze();
             Application.Current.Resources["BackgroundGradientBrush"] = bgGradient;
 
-            // Градиентные сферы (пузыри) в цвет акцента
             var orb1 = new RadialGradientBrush();
-            orb1.GradientStops.Add(new GradientStop(Color.FromArgb(isLight ? (byte)0x55 : (byte)0x48, accent.R, accent.G, accent.B), 0.0));
+            orb1.GradientStops.Add(new GradientStop(Color.FromArgb(isLight ? (byte)0x58 : (byte)0x4C, accent.R, accent.G, accent.B), 0.0));
             orb1.GradientStops.Add(new GradientStop(Color.FromArgb(0, accent.R, accent.G, accent.B), 1.0));
             orb1.Freeze();
             Application.Current.Resources["OrbPrimaryBrush"] = orb1;
 
             var orb2 = new RadialGradientBrush();
-            orb2.GradientStops.Add(new GradientStop(Color.FromArgb(isLight ? (byte)0x42 : (byte)0x36, accent.R, accent.G, accent.B), 0.0));
+            orb2.GradientStops.Add(new GradientStop(Color.FromArgb(isLight ? (byte)0x44 : (byte)0x38, accent.R, accent.G, accent.B), 0.0));
             orb2.GradientStops.Add(new GradientStop(Color.FromArgb(0, accent.R, accent.G, accent.B), 1.0));
             orb2.Freeze();
             Application.Current.Resources["OrbSecondaryBrush"] = orb2;
+
+            HeaderClockPanel.Visibility = _design.ShowClock ? Visibility.Visible : Visibility.Collapsed;
+            TrayIcon.ToolTipText = $"Nook • Beta 0.1 ({_design.HotkeyDisplay})";
 
             UpdateAcrylicBlur();
         }
@@ -305,8 +363,10 @@ namespace FastPush
         {
             if (_windowHandle == IntPtr.Zero) return;
 
-            byte alpha = (byte)Math.Clamp((int)Math.Round(_design.BlurOpacity / 100.0 * 240), 50, 240);
-            uint gradientColor = ((uint)alpha << 24) | _acrylicTintBgr;
+            double t = Math.Clamp(_design.BlurOpacity / 100.0, 0.0, 1.0);
+            // Минимум alpha=10 сохраняет активным аппаратный размытый слой Windows 11 даже на 0%
+            byte winAlpha = (byte)Math.Clamp((int)Math.Round(10 + t * 235), 10, 245);
+            uint gradientColor = ((uint)winAlpha << 24) | _acrylicTintBgr;
 
             var accent = new AccentPolicy
             {
@@ -342,18 +402,63 @@ namespace FastPush
             }
         }
 
-        // --- АНИМАЦИИ ЗАДНЕГО ПЛАНА (ПУЗЫРИ + СЕТКА) ---
+        // --- 6 РЕЖИМОВ АНИМАЦИИ ЗАДНЕГО ПЛАНА ---
+
+        private void InitializeBokehParticles()
+        {
+            double[] xPositions = { 90, 230, 390, 540, 710, 860, 1020, 1150, 320, 940 };
+            double[] sizes = { 18, 34, 24, 44, 20, 38, 26, 30, 16, 40 };
+            double[] speeds = { 11, 15, 12.5, 17, 10.5, 14, 13, 16, 9.5, 15.5 };
+            double[] sways = { 28, -34, 22, -30, 26, -24, 32, -26, 20, -32 };
+            double[] startOffsets = { 680, 520, 730, 380, 610, 290, 690, 440, 560, 220 };
+
+            for (int i = 0; i < xPositions.Length; i++)
+            {
+                var moveY = new TranslateTransform(0, startOffsets[i]);
+                var swayX = new TranslateTransform(0, 0);
+                var group = new TransformGroup();
+                group.Children.Add(moveY);
+                group.Children.Add(swayX);
+
+                var circle = new Ellipse
+                {
+                    Width = sizes[i],
+                    Height = sizes[i],
+                    Opacity = 0.24,
+                    RenderTransform = group,
+                    CacheMode = new BitmapCache(0.5)
+                };
+                circle.SetResourceReference(Shape.FillProperty, "AccentBrush");
+
+                Canvas.SetLeft(circle, xPositions[i]);
+                Canvas.SetTop(circle, 0);
+                BokehCanvas.Children.Add(circle);
+
+                _bokehParticles.Add((moveY, swayX, speeds[i], sways[i], startOffsets[i]));
+            }
+        }
 
         private void UpdateBackgroundAnimations()
         {
-            BubblesCanvas.Visibility = _design.AnimateBubbles ? Visibility.Visible : Visibility.Collapsed;
-            GridPatternLayer.Visibility = _design.AnimateGrid ? Visibility.Visible : Visibility.Collapsed;
+            StopBackgroundAnimations();
+
+            string mode = _design.BackgroundMode ?? "Combo";
+            bool useBubbles = mode is "Combo" or "Aurora";
+            bool useGrid = mode is "Combo" or "Grid";
+            bool useWaves = mode == "Waves";
+            bool useBokeh = mode == "Bokeh";
+
+            BubblesCanvas.Visibility = useBubbles ? Visibility.Visible : Visibility.Collapsed;
+            GridPatternLayer.Visibility = useGrid ? Visibility.Visible : Visibility.Collapsed;
+            WavesLayer.Visibility = useWaves ? Visibility.Visible : Visibility.Collapsed;
+            BokehCanvas.Visibility = useBokeh ? Visibility.Visible : Visibility.Collapsed;
 
             if (!this.IsVisible) return;
 
-            if (_design.AnimateBubbles)
+            var sine = new SineEase { EasingMode = EasingMode.EaseInOut };
+
+            if (useBubbles)
             {
-                var sine = new SineEase { EasingMode = EasingMode.EaseInOut };
                 Orb1Translate.BeginAnimation(TranslateTransform.XProperty, CreateWaveAnim(0, 220, 13, sine));
                 Orb1Translate.BeginAnimation(TranslateTransform.YProperty, CreateWaveAnim(0, 120, 16, sine));
                 Orb2Translate.BeginAnimation(TranslateTransform.XProperty, CreateWaveAnim(0, -210, 15, sine));
@@ -361,29 +466,54 @@ namespace FastPush
                 Orb3Scale.BeginAnimation(ScaleTransform.ScaleXProperty, CreateWaveAnim(0.85, 1.22, 10, sine));
                 Orb3Scale.BeginAnimation(ScaleTransform.ScaleYProperty, CreateWaveAnim(0.85, 1.22, 12, sine));
             }
-            else
+
+            if (useGrid)
             {
-                Orb1Translate.BeginAnimation(TranslateTransform.XProperty, null);
-                Orb1Translate.BeginAnimation(TranslateTransform.YProperty, null);
-                Orb2Translate.BeginAnimation(TranslateTransform.XProperty, null);
-                Orb2Translate.BeginAnimation(TranslateTransform.YProperty, null);
-                Orb3Scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-                Orb3Scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+                var loop = new DoubleAnimation(0, 48, TimeSpan.FromSeconds(14)) { RepeatBehavior = RepeatBehavior.Forever };
+                GridPatternTranslate.BeginAnimation(TranslateTransform.XProperty, loop);
+                GridPatternTranslate.BeginAnimation(TranslateTransform.YProperty, loop);
             }
 
-            if (_design.AnimateGrid)
+            if (useWaves)
             {
-                // Бесшовное движение сетки на шаг ячейки 48px
-                var loopX = new DoubleAnimation(0, 48, TimeSpan.FromSeconds(14)) { RepeatBehavior = RepeatBehavior.Forever };
-                var loopY = new DoubleAnimation(0, 48, TimeSpan.FromSeconds(14)) { RepeatBehavior = RepeatBehavior.Forever };
-                GridPatternTranslate.BeginAnimation(TranslateTransform.XProperty, loopX);
-                GridPatternTranslate.BeginAnimation(TranslateTransform.YProperty, loopY);
+                StartPulseRing(WaveRing1, Wave1Scale, 0.0);
+                StartPulseRing(WaveRing2, Wave2Scale, 2.0);
+                StartPulseRing(WaveRing3, Wave3Scale, 4.0);
             }
-            else
+
+            if (useBokeh)
             {
-                GridPatternTranslate.BeginAnimation(TranslateTransform.XProperty, null);
-                GridPatternTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+                foreach (var p in _bokehParticles)
+                {
+                    var floatUp = new DoubleAnimation(740, -60, TimeSpan.FromSeconds(p.SpeedSec))
+                    {
+                        RepeatBehavior = RepeatBehavior.Forever
+                    };
+                    p.MoveY.BeginAnimation(TranslateTransform.YProperty, floatUp);
+                    p.SwayX.BeginAnimation(TranslateTransform.XProperty, CreateWaveAnim(-p.SwayAmount, p.SwayAmount, p.SpeedSec * 0.45, sine));
+                }
             }
+        }
+
+        private static void StartPulseRing(Ellipse ring, ScaleTransform scale, double delaySec)
+        {
+            var dur = TimeSpan.FromSeconds(6);
+            var begin = TimeSpan.FromSeconds(delaySec);
+
+            var scaleAnim = new DoubleAnimation(0.25, 2.5, dur)
+            {
+                BeginTime = begin,
+                RepeatBehavior = RepeatBehavior.Forever
+            };
+            var fadeAnim = new DoubleAnimation(0.42, 0.0, dur)
+            {
+                BeginTime = begin,
+                RepeatBehavior = RepeatBehavior.Forever
+            };
+
+            scale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleAnim);
+            scale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleAnim);
+            ring.BeginAnimation(UIElement.OpacityProperty, fadeAnim);
         }
 
         private void StopBackgroundAnimations()
@@ -394,8 +524,25 @@ namespace FastPush
             Orb2Translate.BeginAnimation(TranslateTransform.YProperty, null);
             Orb3Scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
             Orb3Scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+
             GridPatternTranslate.BeginAnimation(TranslateTransform.XProperty, null);
             GridPatternTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+
+            Wave1Scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            Wave1Scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            WaveRing1.BeginAnimation(UIElement.OpacityProperty, null);
+            Wave2Scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            Wave2Scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            WaveRing2.BeginAnimation(UIElement.OpacityProperty, null);
+            Wave3Scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            Wave3Scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            WaveRing3.BeginAnimation(UIElement.OpacityProperty, null);
+
+            foreach (var p in _bokehParticles)
+            {
+                p.MoveY.BeginAnimation(TranslateTransform.YProperty, null);
+                p.SwayX.BeginAnimation(TranslateTransform.XProperty, null);
+            }
         }
 
         private static DoubleAnimation CreateWaveAnim(double from, double to, double sec, IEasingFunction ease)
@@ -408,11 +555,480 @@ namespace FastPush
             };
         }
 
-        // --- ВЫЕЗЖАЮЩАЯ ПАНЕЛЬ НАСТРОЕК (СПРАВА НАЛЕВО) ---
+        // --- РЕЖИМ РЕДАКТИРОВАНИЯ (КАК НА IPHONE: ПЛИТКИ + КАТЕГОРИИ + DRAG & DROP) ---
+
+        private void SetEditMode(bool enable)
+        {
+            IsEditMode = enable;
+            EditModeBtn.IsChecked = enable;
+            EditModeBtn.Content = enable ? "✓ Готово" : "✎ Ред.";
+            SubHeaderStatusText.Text = enable ? "режим правки" : "beta 0.1";
+
+            if (enable && _isDrawerOpen)
+                CloseSettingsDrawer();
+        }
+
+        private void EditModeBtn_Click(object sender, RoutedEventArgs e)
+        {
+            SetEditMode(EditModeBtn.IsChecked == true);
+        }
+
+        private void MenuEditMode_Click(object sender, RoutedEventArgs e)
+        {
+            if (!this.IsVisible) ToggleOverlay();
+            SetEditMode(!IsEditMode);
+        }
+
+        private static bool IsClickInsideTaggedButton(DependencyObject? source, DependencyObject stopAt, params string[] tags)
+        {
+            while (source != null && source != stopAt)
+            {
+                if (source is Button b && b.Tag is string t && tags.Contains(t))
+                    return true;
+                source = VisualTreeHelper.GetParent(source);
+            }
+            return false;
+        }
+
+        // Живое перетаскивание плиток (iOS Drag & Drop)
+        private void Tile_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (!IsEditMode || sender is not Button tileBtn || tileBtn.Tag is not TileViewModel tile)
+                return;
+
+            if (IsClickInsideTaggedButton(e.OriginalSource as DependencyObject, tileBtn, "QuickDeleteBtn"))
+                return;
+
+            _tileDragStartPoint = e.GetPosition(this);
+            _potentialDraggedTile = tile;
+        }
+
+        private void Tile_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            _potentialDraggedTile = null;
+        }
+
+        private void Tile_PreviewMouseMove(object sender, MouseEventArgs e)
+        {
+            if (!IsEditMode || _isInternalDragging || _potentialDraggedTile == null || e.LeftButton != MouseButtonState.Pressed)
+                return;
+
+            Point pos = e.GetPosition(this);
+            if (Math.Abs(pos.X - _tileDragStartPoint.X) > 6 || Math.Abs(pos.Y - _tileDragStartPoint.Y) > 6)
+            {
+                TileViewModel dragged = _potentialDraggedTile;
+                _isInternalDragging = true;
+                _suppressDeactivateHide = true;
+
+                try
+                {
+                    var data = new DataObject(DRAG_TILE_FORMAT, dragged);
+                    // Источником выступает TilesContainer, чтобы живая перестановка карточек внутри WrapPanel не срывала захват
+                    DragDrop.DoDragDrop(TilesContainer, data, DragDropEffects.Move);
+                    SaveConfiguration();
+                }
+                finally
+                {
+                    _potentialDraggedTile = null;
+                    _isInternalDragging = false;
+                    _suppressDeactivateHide = false;
+                }
+            }
+        }
+
+        private void Tile_DragEnter(object sender, DragEventArgs e)
+        {
+            if (e.Data.GetDataPresent(DRAG_TILE_FORMAT))
+            {
+                e.Effects = DragDropEffects.Move;
+                e.Handled = true;
+            }
+        }
+
+        private void Tile_DragOver(object sender, DragEventArgs e)
+        {
+            if (!e.Data.GetDataPresent(DRAG_TILE_FORMAT)) return;
+
+            e.Effects = DragDropEffects.Move;
+            e.Handled = true;
+
+            if ((DateTime.UtcNow - _lastTileSwapUtc).TotalMilliseconds < 150) return;
+
+            if (e.Data.GetData(DRAG_TILE_FORMAT) is not TileViewModel draggedTile ||
+                sender is not Button targetBtn ||
+                targetBtn.Tag is not TileViewModel targetTile ||
+                ReferenceEquals(draggedTile, targetTile))
+            {
+                return;
+            }
+
+            // Проверяем попадание курсора во внутреннюю область целевой плитки (защита от дрожания на границе)
+            Point p = e.GetPosition(targetBtn);
+            if (p.X < targetBtn.ActualWidth * 0.15 || p.X > targetBtn.ActualWidth * 0.85 ||
+                p.Y < targetBtn.ActualHeight * 0.15 || p.Y > targetBtn.ActualHeight * 0.85)
+            {
+                return;
+            }
+
+            var active = GetActiveTiles();
+            if (active == null) return;
+
+            int oldIdx = active.IndexOf(draggedTile);
+            int newIdx = active.IndexOf(targetTile);
+
+            if (oldIdx >= 0 && newIdx >= 0 && oldIdx != newIdx)
+            {
+                _lastTileSwapUtc = DateTime.UtcNow;
+                active.Move(oldIdx, newIdx);
+            }
+        }
+
+        private void Tile_DragLeave(object sender, DragEventArgs e) { }
+
+        private void Tile_Drop(object sender, DragEventArgs e)
+        {
+            if (!e.Data.GetDataPresent(DRAG_TILE_FORMAT)) return;
+
+            e.Handled = true;
+            if (e.Data.GetData(DRAG_TILE_FORMAT) is TileViewModel draggedTile &&
+                sender is Button targetBtn &&
+                targetBtn.Tag is TileViewModel targetTile &&
+                !ReferenceEquals(draggedTile, targetTile))
+            {
+                var active = GetActiveTiles();
+                if (active != null)
+                {
+                    int oldIdx = active.IndexOf(draggedTile);
+                    int newIdx = active.IndexOf(targetTile);
+                    if (oldIdx >= 0 && newIdx >= 0 && oldIdx != newIdx)
+                        active.Move(oldIdx, newIdx);
+                }
+            }
+        }
+
+        private void QuickDeleteTileBtn_Click(object sender, RoutedEventArgs e)
+        {
+            e.Handled = true;
+            if (sender is FrameworkElement fe && fe.DataContext is TileViewModel tile)
+            {
+                var active = GetActiveTiles();
+                if (active != null && active.Remove(tile))
+                    SaveConfiguration();
+            }
+        }
+
+        // --- РЕДАКТИРОВАНИЕ И ПЕРЕТАСКИВАНИЕ КАТЕГОРИЙ ---
+
+        private void BuildCategoryTabsUI()
+        {
+            var tabButtons = new List<RadioButton>();
+
+            foreach (string categoryName in _categoryOrder)
+            {
+                var radioBtn = new RadioButton
+                {
+                    Content = categoryName,
+                    GroupName = "FastPushCategories",
+                    Style = (Style)FindResource("CategoryTabStyle"),
+                    Tag = categoryName,
+                    AllowDrop = true
+                };
+
+                var cm = new ContextMenu();
+                var renItem = new MenuItem { Header = "Переименовать категорию", Tag = categoryName };
+                renItem.Click += (_, _) => PromptRenameCategory(categoryName);
+
+                var delItem = new MenuItem { Header = "Удалить категорию", Tag = categoryName };
+                delItem.Click += (_, _) => PromptDeleteCategory(categoryName);
+
+                cm.Items.Add(renItem);
+                cm.Items.Add(new Separator());
+                cm.Items.Add(delItem);
+                radioBtn.ContextMenu = cm;
+
+                radioBtn.Checked += (s, _) =>
+                {
+                    if (s is RadioButton rb && rb.Tag is string selectedCat)
+                        SwitchActiveCategoryCollection(selectedCat);
+                };
+
+                // Перетаскивание самих вкладок категорий + сброс плиток на вкладку
+                radioBtn.PreviewMouseLeftButtonDown += CategoryTab_PreviewMouseLeftButtonDown;
+                radioBtn.PreviewMouseMove += CategoryTab_PreviewMouseMove;
+                radioBtn.PreviewMouseLeftButtonUp += (_, _) => _potentialDraggedCategory = null;
+                radioBtn.DragEnter += CategoryTab_DragEnter;
+                radioBtn.Drop += CategoryTab_Drop;
+
+                tabButtons.Add(radioBtn);
+            }
+
+            CategoriesContainer.ItemsSource = tabButtons;
+        }
+
+        private void CategoryTab_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (!IsEditMode || sender is not RadioButton rb || rb.Tag is not string catName) return;
+
+            if (IsClickInsideTaggedButton(e.OriginalSource as DependencyObject, rb, "CatRenameBtn", "CatDeleteBtn"))
+                return;
+
+            _catDragStartPoint = e.GetPosition(this);
+            _potentialDraggedCategory = catName;
+        }
+
+        private void CategoryTab_PreviewMouseMove(object sender, MouseEventArgs e)
+        {
+            if (!IsEditMode || _isInternalDragging || _potentialDraggedCategory == null || e.LeftButton != MouseButtonState.Pressed)
+                return;
+
+            Point pos = e.GetPosition(this);
+            if (Math.Abs(pos.X - _catDragStartPoint.X) > 6 || Math.Abs(pos.Y - _catDragStartPoint.Y) > 6)
+            {
+                string draggedCat = _potentialDraggedCategory;
+                _isInternalDragging = true;
+                _suppressDeactivateHide = true;
+
+                try
+                {
+                    var data = new DataObject(DRAG_CATEGORY_FORMAT, draggedCat);
+                    DragDrop.DoDragDrop(CategoriesContainer, data, DragDropEffects.Move);
+                }
+                finally
+                {
+                    _potentialDraggedCategory = null;
+                    _isInternalDragging = false;
+                    _suppressDeactivateHide = false;
+                }
+            }
+        }
+
+        private void CategoryTab_DragEnter(object sender, DragEventArgs e)
+        {
+            if (e.Data.GetDataPresent(DRAG_CATEGORY_FORMAT) ||
+                e.Data.GetDataPresent(DRAG_TILE_FORMAT) ||
+                e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.Move;
+                e.Handled = true;
+            }
+        }
+
+        private void CategoryTab_Drop(object sender, DragEventArgs e)
+        {
+            if (sender is not RadioButton rb || rb.Tag is not string targetCat) return;
+
+            // 1. Смена порядка категорий перетаскиванием
+            if (e.Data.GetDataPresent(DRAG_CATEGORY_FORMAT) && e.Data.GetData(DRAG_CATEGORY_FORMAT) is string sourceCat)
+            {
+                e.Handled = true;
+                int oldIdx = _categoryOrder.IndexOf(sourceCat);
+                int newIdx = _categoryOrder.IndexOf(targetCat);
+                if (oldIdx >= 0 && newIdx >= 0 && oldIdx != newIdx)
+                {
+                    _categoryOrder.RemoveAt(oldIdx);
+                    _categoryOrder.Insert(newIdx, sourceCat);
+                    BuildCategoryTabsUI();
+                    SelectCategory(_activeCategory);
+                    SaveConfiguration();
+                }
+                return;
+            }
+
+            if (!_categoriesMap.TryGetValue(targetCat, out var targetCol)) return;
+
+            // 2. Перенос плитки на другую вкладку категории
+            if (e.Data.GetDataPresent(DRAG_TILE_FORMAT) && e.Data.GetData(DRAG_TILE_FORMAT) is TileViewModel draggedTile)
+            {
+                e.Handled = true;
+                if (targetCat == _activeCategory) return;
+
+                var sourceCol = GetActiveTiles();
+                if (sourceCol != null && sourceCol.Remove(draggedTile))
+                {
+                    if (!targetCol.Any(t => string.Equals(t.Path, draggedTile.Path, StringComparison.OrdinalIgnoreCase)))
+                        targetCol.Add(draggedTile);
+                    SaveConfiguration();
+                }
+                return;
+            }
+
+            // 3. Сброс внешних ярлыков/файлов прямо на вкладку категории
+            if (e.Data.GetDataPresent(DataFormats.FileDrop) && e.Data.GetData(DataFormats.FileDrop) is string[] files)
+            {
+                e.Handled = true;
+                bool added = false;
+                foreach (string path in files)
+                {
+                    if (!File.Exists(path) && !Directory.Exists(path)) continue;
+                    if (targetCol.Any(t => string.Equals(t.Path, path, StringComparison.OrdinalIgnoreCase))) continue;
+
+                    targetCol.Add(new TileViewModel
+                    {
+                        Name = GetDefaultDisplayName(path),
+                        Path = path,
+                        CustomIconPath = string.Empty,
+                        IconSource = ResolveTileIcon(path, null)
+                    });
+                    added = true;
+                }
+
+                if (added)
+                {
+                    SelectCategory(targetCat);
+                    SaveConfiguration();
+                }
+            }
+        }
+
+        private void Categories_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            if (_categoryOrder.Count <= 1) return;
+            e.Handled = true;
+            int idx = _categoryOrder.IndexOf(_activeCategory);
+            if (idx < 0) return;
+
+            int next = e.Delta < 0
+                ? (idx + 1) % _categoryOrder.Count
+                : (idx - 1 + _categoryOrder.Count) % _categoryOrder.Count;
+
+            SelectCategory(_categoryOrder[next]);
+        }
+
+        private void AddCategory_Click(object sender, RoutedEventArgs e)
+        {
+            _suppressDeactivateHide = true;
+            try
+            {
+                var dlg = new RenameWindow("", "Новая категория", "Название категории:") { Owner = this };
+                if (dlg.ShowDialog() == true)
+                {
+                    string name = dlg.NewName;
+                    if (_categoriesMap.Keys.Any(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase)))
+                        return;
+
+                    var col = new ObservableCollection<TileViewModel>();
+                    col.CollectionChanged += (_, _) => UpdateEmptyHint();
+
+                    _categoriesMap[name] = col;
+                    _categoryOrder.Add(name);
+
+                    BuildCategoryTabsUI();
+                    SelectCategory(name);
+                    SaveConfiguration();
+                }
+            }
+            finally
+            {
+                _suppressDeactivateHide = false;
+                this.Activate();
+            }
+        }
+
+        private void CategoryInlineRename_Click(object sender, RoutedEventArgs e)
+        {
+            e.Handled = true;
+            if (sender is DependencyObject d)
+            {
+                RadioButton? rb = FindParent<RadioButton>(d);
+                if (rb?.Tag is string catName)
+                    PromptRenameCategory(catName);
+            }
+        }
+
+        private void CategoryInlineDelete_Click(object sender, RoutedEventArgs e)
+        {
+            e.Handled = true;
+            if (sender is DependencyObject d)
+            {
+                RadioButton? rb = FindParent<RadioButton>(d);
+                if (rb?.Tag is string catName)
+                    PromptDeleteCategory(catName);
+            }
+        }
+
+        private static T? FindParent<T>(DependencyObject? child) where T : DependencyObject
+        {
+            while (child != null)
+            {
+                if (child is T typed) return typed;
+                child = VisualTreeHelper.GetParent(child);
+            }
+            return null;
+        }
+
+        private void PromptRenameCategory(string oldName)
+        {
+            _suppressDeactivateHide = true;
+            try
+            {
+                var dlg = new RenameWindow(oldName, "Переименовать категорию", "Новое название:") { Owner = this };
+                if (dlg.ShowDialog() == true && !string.Equals(oldName, dlg.NewName, StringComparison.Ordinal))
+                {
+                    string newName = dlg.NewName;
+                    if (_categoriesMap.ContainsKey(newName)) return;
+
+                    var tiles = _categoriesMap[oldName];
+                    _categoriesMap.Remove(oldName);
+                    _categoriesMap[newName] = tiles;
+
+                    int idx = _categoryOrder.IndexOf(oldName);
+                    if (idx >= 0) _categoryOrder[idx] = newName;
+                    if (_activeCategory == oldName) _activeCategory = newName;
+
+                    BuildCategoryTabsUI();
+                    SelectCategory(_activeCategory);
+                    SaveConfiguration();
+                }
+            }
+            finally
+            {
+                _suppressDeactivateHide = false;
+                this.Activate();
+            }
+        }
+
+        private void PromptDeleteCategory(string catName)
+        {
+            if (_categoryOrder.Count <= 1 || !_categoriesMap.TryGetValue(catName, out var col))
+                return;
+
+            if (col.Count > 0)
+            {
+                _suppressDeactivateHide = true;
+                try
+                {
+                    var res = MessageBox.Show(
+                        $"Удалить категорию «{catName}» вместе с её плитками ({col.Count} шт.)?",
+                        "Nook",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Question);
+                    if (res != MessageBoxResult.Yes) return;
+                }
+                finally
+                {
+                    _suppressDeactivateHide = false;
+                    this.Activate();
+                }
+            }
+
+            _categoriesMap.Remove(catName);
+            _categoryOrder.Remove(catName);
+
+            BuildCategoryTabsUI();
+            if (_activeCategory == catName)
+                SelectCategory(_categoryOrder.First());
+            else
+                SelectCategory(_activeCategory);
+
+            SaveConfiguration();
+        }
+
+        // --- ВЫЕЗЖАЮЩАЯ ПАНЕЛЬ НАСТРОЕК И ЗАПИСЬ ХОТКЕЯ ---
 
         private void OpenSettingsDrawer()
         {
             if (_isDrawerOpen) return;
+            SetEditMode(false);
             _isDrawerOpen = true;
 
             SyncSettingsUI();
@@ -424,19 +1040,21 @@ namespace FastPush
             var duration = TimeSpan.FromMilliseconds(260);
 
             SettingsScrim.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0, 1, duration));
-            DrawerTranslate.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(420, 0, duration) { EasingFunction = ease });
+            DrawerTranslate.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(430, 0, duration) { EasingFunction = ease });
         }
 
         private void CloseSettingsDrawer(bool instant = false)
         {
             if (!_isDrawerOpen) return;
             _isDrawerOpen = false;
+            _isRecordingHotkey = false;
+            RecordHotkeyButton.Content = _design.HotkeyDisplay;
 
             if (instant)
             {
                 SettingsScrim.BeginAnimation(UIElement.OpacityProperty, null);
                 DrawerTranslate.BeginAnimation(TranslateTransform.XProperty, null);
-                DrawerTranslate.X = 420;
+                DrawerTranslate.X = 430;
                 SettingsScrim.Visibility = Visibility.Collapsed;
                 SettingsDrawer.Visibility = Visibility.Collapsed;
                 return;
@@ -446,7 +1064,7 @@ namespace FastPush
             var duration = TimeSpan.FromMilliseconds(210);
 
             var scrimFade = new DoubleAnimation(SettingsScrim.Opacity, 0, duration);
-            var slideOut = new DoubleAnimation(DrawerTranslate.X, 420, duration) { EasingFunction = ease };
+            var slideOut = new DoubleAnimation(DrawerTranslate.X, 430, duration) { EasingFunction = ease };
 
             slideOut.Completed += (_, _) =>
             {
@@ -475,6 +1093,9 @@ namespace FastPush
         {
             if (PanelAppearance == null || sender is not RadioButton rb || rb.Tag is not string tab) return;
 
+            _isRecordingHotkey = false;
+            if (RecordHotkeyButton != null) RecordHotkeyButton.Content = _design.HotkeyDisplay;
+
             PanelAppearance.Visibility = tab == "Appearance" ? Visibility.Visible : Visibility.Collapsed;
             PanelGeneral.Visibility = tab == "General" ? Visibility.Visible : Visibility.Collapsed;
             PanelOther.Visibility = tab == "Other" ? Visibility.Visible : Visibility.Collapsed;
@@ -490,14 +1111,18 @@ namespace FastPush
             foreach (var rb in AccentsPanel.Children.OfType<RadioButton>())
                 rb.IsChecked = string.Equals(rb.Tag as string, _design.AccentColor, StringComparison.OrdinalIgnoreCase);
 
-            int blur = Math.Clamp(_design.BlurOpacity, 25, 95);
+            foreach (var rb in BgModesPanel.Children.OfType<RadioButton>())
+                rb.IsChecked = string.Equals(rb.Tag as string, _design.BackgroundMode, StringComparison.OrdinalIgnoreCase);
+
+            int blur = Math.Clamp(_design.BlurOpacity, 0, 100);
             BlurSlider.Value = blur;
             BlurValueText.Text = $"{blur}%";
 
-            BubblesToggle.IsChecked = _design.AnimateBubbles;
-            GridToggle.IsChecked = _design.AnimateGrid;
+            ShowClockToggle.IsChecked = _design.ShowClock;
+            HideOnDeactivateToggle.IsChecked = _design.HideOnDeactivate;
             HideAfterLaunchToggle.IsChecked = _design.HideAfterLaunch;
             SmoothAnimToggle.IsChecked = _design.SmoothAnimations;
+            RecordHotkeyButton.Content = _design.HotkeyDisplay;
 
             bool autoStart = IsAutoStartEnabled();
             AutoStartToggle.IsChecked = autoStart;
@@ -522,6 +1147,14 @@ namespace FastPush
             SaveConfiguration();
         }
 
+        private void BgMode_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isSyncingUI || sender is not RadioButton rb || rb.Tag is not string mode) return;
+            _design.BackgroundMode = mode;
+            UpdateBackgroundAnimations();
+            SaveConfiguration();
+        }
+
         private void BlurSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
             if (_isSyncingUI) return;
@@ -534,20 +1167,117 @@ namespace FastPush
         private void DesignToggle_Click(object sender, RoutedEventArgs e)
         {
             if (_isSyncingUI) return;
-            _design.AnimateBubbles = BubblesToggle.IsChecked == true;
-            _design.AnimateGrid = GridToggle.IsChecked == true;
+            _design.ShowClock = ShowClockToggle.IsChecked == true;
+            _design.HideOnDeactivate = HideOnDeactivateToggle.IsChecked == true;
             _design.HideAfterLaunch = HideAfterLaunchToggle.IsChecked == true;
             _design.SmoothAnimations = SmoothAnimToggle.IsChecked == true;
 
-            UpdateBackgroundAnimations();
+            HeaderClockPanel.Visibility = _design.ShowClock ? Visibility.Visible : Visibility.Collapsed;
             SaveConfiguration();
+        }
+
+        private void RecordHotkeyButton_Click(object sender, RoutedEventArgs e)
+        {
+            _isRecordingHotkey = true;
+            RecordHotkeyButton.Content = "Нажмите комбинацию... (Esc — отмена)";
+        }
+
+        private void ResetHotkeyBtn_Click(object sender, RoutedEventArgs e)
+        {
+            _isRecordingHotkey = false;
+            _design.HotkeyModifiers = MOD_CONTROL | MOD_ALT;
+            _design.HotkeyVirtualKey = 0x20;
+            _design.HotkeyDisplay = "Ctrl + Alt + Space";
+
+            RegisterCurrentHotkey(showWarningOnFail: true);
+            RecordHotkeyButton.Content = _design.HotkeyDisplay;
+            TrayIcon.ToolTipText = $"Nook • Beta 0.1 ({_design.HotkeyDisplay})";
+            SaveConfiguration();
+        }
+
+        private bool RegisterCurrentHotkey(bool showWarningOnFail)
+        {
+            if (_windowHandle == IntPtr.Zero) return false;
+
+            UnregisterHotKey(_windowHandle, HOTKEY_ID);
+            bool ok = RegisterHotKey(
+                _windowHandle,
+                HOTKEY_ID,
+                _design.HotkeyModifiers | MOD_NOREPEAT,
+                _design.HotkeyVirtualKey);
+
+            if (!ok && showWarningOnFail)
+            {
+                MessageBox.Show($"Хоткей {_design.HotkeyDisplay} уже занят другой программой.\nВы можете назначить другую клавишу в Настройках → Основные.",
+                                "Nook", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            return ok;
+        }
+
+        private void HandleHotkeyRecording(KeyEventArgs e)
+        {
+            e.Handled = true;
+            Key key = e.Key == Key.System ? e.SystemKey : e.Key;
+
+            if (key == Key.Escape)
+            {
+                _isRecordingHotkey = false;
+                RecordHotkeyButton.Content = _design.HotkeyDisplay;
+                return;
+            }
+
+            if (key is Key.LeftCtrl or Key.RightCtrl or Key.LeftAlt or Key.RightAlt or Key.LeftShift or Key.RightShift or Key.LWin or Key.RWin)
+                return;
+
+            uint mods = 0;
+            var parts = new List<string>();
+
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) { mods |= MOD_CONTROL; parts.Add("Ctrl"); }
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))     { mods |= MOD_ALT;     parts.Add("Alt"); }
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))   { mods |= MOD_SHIFT;   parts.Add("Shift"); }
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Windows)) { mods |= MOD_WIN;     parts.Add("Win"); }
+
+            bool isFnKey = key >= Key.F1 && key <= Key.F12;
+            if (mods == 0 && !isFnKey)
+            {
+                RecordHotkeyButton.Content = "Зажмите Ctrl, Alt, Shift или F1–F12";
+                return;
+            }
+
+            uint vk = (uint)KeyInterop.VirtualKeyFromKey(key);
+            parts.Add(key == Key.Space ? "Space" : key.ToString());
+            string newDisplay = string.Join(" + ", parts);
+
+            uint prevMods = _design.HotkeyModifiers;
+            uint prevVk = _design.HotkeyVirtualKey;
+            string prevDisplay = _design.HotkeyDisplay;
+
+            _design.HotkeyModifiers = mods;
+            _design.HotkeyVirtualKey = vk;
+            _design.HotkeyDisplay = newDisplay;
+
+            if (RegisterCurrentHotkey(showWarningOnFail: false))
+            {
+                RecordHotkeyButton.Content = _design.HotkeyDisplay;
+                TrayIcon.ToolTipText = $"Nook • Beta 0.1 ({_design.HotkeyDisplay})";
+                SaveConfiguration();
+            }
+            else
+            {
+                _design.HotkeyModifiers = prevMods;
+                _design.HotkeyVirtualKey = prevVk;
+                _design.HotkeyDisplay = prevDisplay;
+                RegisterCurrentHotkey(showWarningOnFail: false);
+                RecordHotkeyButton.Content = $"{newDisplay} занят! ({prevDisplay})";
+            }
+
+            _isRecordingHotkey = false;
         }
 
         private void AutoStartToggle_Click(object sender, RoutedEventArgs e)
         {
             if (_isSyncingUI) return;
-            bool enable = AutoStartToggle.IsChecked == true;
-            SetAutoStart(enable);
+            SetAutoStart(AutoStartToggle.IsChecked == true);
             AutoStartMenuItem.IsChecked = IsAutoStartEnabled();
         }
 
@@ -556,18 +1286,28 @@ namespace FastPush
             _design = new DesignSettings();
             ApplyPalette();
             UpdateBackgroundAnimations();
+            RegisterCurrentHotkey(showWarningOnFail: false);
             SyncSettingsUI();
             SaveConfiguration();
         }
 
-        private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
+private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
         {
-            Process.Start(new ProcessStartInfo
+            _suppressDeactivateHide = true;
+            try
             {
-                FileName = "explorer.exe",
-                Arguments = $"\"{AppDomain.CurrentDomain.BaseDirectory}\"",
-                UseShellExecute = true
-            });
+                Directory.CreateDirectory(_dataDir);
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = $"\"{_dataDir}\"",
+                    UseShellExecute = true
+                });
+            }
+            finally
+            {
+                _suppressDeactivateHide = false;
+            }
         }
 
         // --- АНИМАЦИЯ ПОЯВЛЕНИЯ И СКРЫТИЯ ОКНА ---
@@ -575,8 +1315,12 @@ namespace FastPush
         private void PlayShowAnimation()
         {
             _isAnimatingHide = false;
+
             if (!_design.SmoothAnimations)
             {
+                this.BeginAnimation(Window.OpacityProperty, null);
+                OverlayScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+                OverlayScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
                 this.Opacity = 1.0;
                 OverlayScale.ScaleX = 1.0;
                 OverlayScale.ScaleY = 1.0;
@@ -595,11 +1339,14 @@ namespace FastPush
         private void AnimateAndHide()
         {
             if (!this.IsVisible || _isAnimatingHide) return;
+
+            SetEditMode(false);
             CloseSettingsDrawer(instant: true);
 
             if (!_design.SmoothAnimations)
             {
                 StopBackgroundAnimations();
+                _clockTimer.Stop();
                 this.Hide();
                 return;
             }
@@ -616,6 +1363,7 @@ namespace FastPush
                 if (_isAnimatingHide)
                 {
                     StopBackgroundAnimations();
+                    _clockTimer.Stop();
                     this.Hide();
                     _isAnimatingHide = false;
                 }
@@ -634,10 +1382,15 @@ namespace FastPush
             }
             else
             {
-                this.Opacity = 0;
+                _isAnimatingHide = false;
+                if (_design.SmoothAnimations) this.Opacity = 0;
+
                 this.Show();
                 this.Activate();
                 this.Focus();
+
+                UpdateClockText();
+                _clockTimer.Start();
                 UpdateBackgroundAnimations();
                 PlayShowAnimation();
             }
@@ -649,10 +1402,17 @@ namespace FastPush
         {
             try
             {
+                string? exePath = Environment.ProcessPath;
+                if (string.IsNullOrEmpty(exePath)) return false;
+
                 using RegistryKey? key = Registry.CurrentUser.OpenSubKey(RUN_REGISTRY_KEY, false);
-                return key?.GetValue(APP_REGISTRY_NAME) != null;
+                string? val = key?.GetValue(APP_REGISTRY_NAME) as string;
+                return !string.IsNullOrEmpty(val) && val.Contains(exePath, StringComparison.OrdinalIgnoreCase);
             }
-            catch { return false; }
+            catch
+            {
+                return false;
+            }
         }
 
         private void SetAutoStart(bool enable)
@@ -661,6 +1421,8 @@ namespace FastPush
             {
                 using RegistryKey? key = Registry.CurrentUser.OpenSubKey(RUN_REGISTRY_KEY, true);
                 if (key == null) return;
+
+                key.DeleteValue("FastPush", false);
 
                 if (enable)
                 {
@@ -673,7 +1435,7 @@ namespace FastPush
                     key.DeleteValue(APP_REGISTRY_NAME, false);
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 MessageBox.Show($"Не удалось изменить настройки автозапуска:\n{ex.Message}",
                                 "Nook", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -686,7 +1448,7 @@ namespace FastPush
             SyncSettingsUI();
         }
 
-        // --- КАТЕГОРИИ И ПЛИТКИ (JSON) ---
+        // --- КОНФИГУРАЦИЯ И КАТЕГОРИИ (%LocalAppData%\Nook\config.json) ---
 
         private void LoadConfiguration()
         {
@@ -744,38 +1506,13 @@ namespace FastPush
             SelectCategory(targetTab);
         }
 
-        private void BuildCategoryTabsUI()
-        {
-            var tabButtons = new List<RadioButton>();
-
-            foreach (string categoryName in _categoryOrder)
-            {
-                var radioBtn = new RadioButton
-                {
-                    Content = categoryName,
-                    GroupName = "FastPushCategories",
-                    Style = (Style)FindResource("CategoryTabStyle"),
-                    Tag = categoryName
-                };
-
-                radioBtn.Checked += (s, _) =>
-                {
-                    if (s is RadioButton rb && rb.Tag is string selectedCat)
-                        SwitchActiveCategoryCollection(selectedCat);
-                };
-
-                tabButtons.Add(radioBtn);
-            }
-
-            CategoriesContainer.ItemsSource = tabButtons;
-        }
-
         private void SelectCategory(string categoryName)
         {
             if (CategoriesContainer.ItemsSource is IEnumerable<RadioButton> buttons)
             {
                 RadioButton? match = buttons.FirstOrDefault(b => string.Equals(b.Tag as string, categoryName, StringComparison.Ordinal));
-                if (match != null) match.IsChecked = true;
+                if (match != null)
+                    match.IsChecked = true;
             }
         }
 
@@ -809,6 +1546,8 @@ namespace FastPush
         {
             try
             {
+                Directory.CreateDirectory(_dataDir);
+
                 var configToSave = new AppConfig
                 {
                     Settings = _design,
@@ -833,7 +1572,7 @@ namespace FastPush
 
                 File.WriteAllText(_configPath, JsonSerializer.Serialize(configToSave, saveOptions));
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
             {
                 MessageBox.Show($"Не удалось сохранить config.json:\n{ex.Message}",
                                 "Nook", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -847,6 +1586,7 @@ namespace FastPush
                 AppConfig defaultConfig = CreateDefaultConfig();
                 try
                 {
+                    Directory.CreateDirectory(_dataDir);
                     var saveOptions = new JsonSerializerOptions
                     {
                         WriteIndented = true,
@@ -854,7 +1594,11 @@ namespace FastPush
                     };
                     File.WriteAllText(_configPath, JsonSerializer.Serialize(defaultConfig, saveOptions));
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Не удалось создать config.json:\n{ex.Message}",
+                                    "Nook", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
                 return defaultConfig;
             }
 
@@ -868,10 +1612,13 @@ namespace FastPush
                     AllowTrailingCommas = true
                 };
 
-                return JsonSerializer.Deserialize<AppConfig>(jsonContent, readOptions) ?? CreateDefaultConfig();
+                return JsonSerializer.Deserialize<AppConfig>(jsonContent, readOptions)
+                    ?? throw new JsonException("Файл конфигурации не содержит объекта настроек.");
             }
-            catch
+            catch (Exception ex)
             {
+                MessageBox.Show($"Не удалось прочитать config.json:\n{ex.Message}\n\nБудут загружены настройки по умолчанию.",
+                                "Nook", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return CreateDefaultConfig();
             }
         }
@@ -879,7 +1626,7 @@ namespace FastPush
         private AppConfig CreateDefaultConfig()
         {
             string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            string downloadsPath = Path.Combine(userProfile, "Downloads");
+            string downloadsPath = System.IO.Path.Combine(userProfile, "Downloads");
 
             return new AppConfig
             {
@@ -911,14 +1658,14 @@ namespace FastPush
 
         private string GetDefaultDisplayName(string path)
         {
-            string trimmedPath = path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string trimmedPath = path.TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar);
             if (Directory.Exists(path))
             {
-                string folderName = Path.GetFileName(trimmedPath);
+                string folderName = System.IO.Path.GetFileName(trimmedPath);
                 return string.IsNullOrEmpty(folderName) ? path : folderName;
             }
 
-            string fileName = Path.GetFileNameWithoutExtension(trimmedPath);
+            string fileName = System.IO.Path.GetFileNameWithoutExtension(trimmedPath);
             return string.IsNullOrWhiteSpace(fileName) ? trimmedPath : fileName;
         }
 
@@ -930,7 +1677,8 @@ namespace FastPush
                 {
                     var bitmap = new BitmapImage();
                     bitmap.BeginInit();
-                    bitmap.UriSource = new Uri(Path.GetFullPath(customIconPath), UriKind.Absolute);
+                    bitmap.UriSource = new Uri(System.IO.Path.GetFullPath(customIconPath), UriKind.Absolute);
+                    bitmap.DecodePixelWidth = 128;
                     bitmap.CacheOption = BitmapCacheOption.OnLoad;
                     bitmap.EndInit();
                     bitmap.Freeze();
@@ -968,38 +1716,111 @@ namespace FastPush
             return defaultIcon;
         }
 
-        // --- ДОБАВЛЕНИЕ ПЛИТОК (КНОПКА + DRAG & DROP) ---
+        // --- РУЧНОЕ ДОБАВЛЕНИЕ, DRAG & DROP ИЗ ПРОВОДНИКА И УПРАВЛЕНИЕ ПЛИТКАМИ ---
 
         private void AddTileManual_Click(object sender, RoutedEventArgs e)
         {
             var activeTiles = GetActiveTiles();
             if (activeTiles == null) return;
 
-            var dialog = new OpenFileDialog
+            _suppressDeactivateHide = true;
+            try
             {
-                Title = "Выберите приложение или ярлык",
-                Filter = "Приложения и ярлыки (*.exe;*.lnk;*.url)|*.exe;*.lnk;*.url|Все файлы (*.*)|*.*"
-            };
-
-            if (dialog.ShowDialog(this) == true)
-            {
-                string path = dialog.FileName;
-                if (!activeTiles.Any(t => string.Equals(t.Path, path, StringComparison.OrdinalIgnoreCase)))
+                var dlg = new OpenFileDialog
                 {
-                    activeTiles.Add(new TileViewModel
+                    Title = "Выберите программы или ярлыки",
+                    Filter = "Программы и ярлыки (*.exe;*.lnk;*.url;*.bat;*.cmd)|*.exe;*.lnk;*.url;*.bat;*.cmd|Все файлы (*.*)|*.*",
+                    DereferenceLinks = false,
+                    Multiselect = true
+                };
+
+                if (dlg.ShowDialog(this) == true)
+                {
+                    bool added = false;
+                    foreach (string path in dlg.FileNames)
                     {
-                        Name = GetDefaultDisplayName(path),
-                        Path = path,
-                        CustomIconPath = string.Empty,
-                        IconSource = ResolveTileIcon(path, null)
-                    });
-                    SaveConfiguration();
+                        if (!File.Exists(path) && !Directory.Exists(path)) continue;
+                        if (activeTiles.Any(t => string.Equals(t.Path, path, StringComparison.OrdinalIgnoreCase))) continue;
+
+                        activeTiles.Add(new TileViewModel
+                        {
+                            Name = GetDefaultDisplayName(path),
+                            Path = path,
+                            CustomIconPath = string.Empty,
+                            IconSource = ResolveTileIcon(path, null)
+                        });
+                        added = true;
+                    }
+
+                    if (added)
+                    {
+                        SaveConfiguration();
+                        UpdateEmptyHint();
+                        if (_isDrawerOpen) CloseSettingsDrawer();
+                    }
                 }
+            }
+            finally
+            {
+                _suppressDeactivateHide = false;
+                this.Activate();
+                this.Focus();
+            }
+        }
+
+        private void AddFolderManual_Click(object sender, RoutedEventArgs e)
+        {
+            var activeTiles = GetActiveTiles();
+            if (activeTiles == null) return;
+
+            _suppressDeactivateHide = true;
+            try
+            {
+                var dlg = new OpenFolderDialog
+                {
+                    Title = "Выберите папку для добавления на панель",
+                    Multiselect = true
+                };
+
+                if (dlg.ShowDialog(this) == true)
+                {
+                    bool added = false;
+                    foreach (string folder in dlg.FolderNames)
+                    {
+                        if (!Directory.Exists(folder)) continue;
+                        if (activeTiles.Any(t => string.Equals(t.Path, folder, StringComparison.OrdinalIgnoreCase))) continue;
+
+                        activeTiles.Add(new TileViewModel
+                        {
+                            Name = GetDefaultDisplayName(folder),
+                            Path = folder,
+                            CustomIconPath = string.Empty,
+                            IconSource = ResolveTileIcon(folder, null)
+                        });
+                        added = true;
+                    }
+
+                    if (added)
+                    {
+                        SaveConfiguration();
+                        UpdateEmptyHint();
+                        if (_isDrawerOpen) CloseSettingsDrawer();
+                    }
+                }
+            }
+            finally
+            {
+                _suppressDeactivateHide = false;
+                this.Activate();
+                this.Focus();
             }
         }
 
         private void Overlay_DragEnter(object sender, DragEventArgs e)
         {
+            if (e.Data.GetDataPresent(DRAG_TILE_FORMAT) || e.Data.GetDataPresent(DRAG_CATEGORY_FORMAT))
+                return;
+
             if (e.Data.GetDataPresent(DataFormats.FileDrop))
             {
                 e.Effects = DragDropEffects.Copy;
@@ -1020,6 +1841,9 @@ namespace FastPush
         private void Overlay_Drop(object sender, DragEventArgs e)
         {
             OverlayBorder.BorderBrush = (Brush)Application.Current.Resources["BorderSubtleBrush"];
+
+            if (e.Data.GetDataPresent(DRAG_TILE_FORMAT) || e.Data.GetDataPresent(DRAG_CATEGORY_FORMAT))
+                return;
 
             var activeTiles = GetActiveTiles();
             if (activeTiles == null) return;
@@ -1043,11 +1867,13 @@ namespace FastPush
                     addedAny = true;
                 }
 
-                if (addedAny) SaveConfiguration();
+                if (addedAny)
+                {
+                    SaveConfiguration();
+                    UpdateEmptyHint();
+                }
             }
         }
-
-        // --- ПЕРЕИМЕНОВАНИЕ, УДАЛЕНИЕ И ЗАПУСК ---
 
         private TileViewModel? GetTileFromMenuItem(object sender)
         {
@@ -1064,14 +1890,108 @@ namespace FastPush
         private void RenameTile_Click(object sender, RoutedEventArgs e)
         {
             TileViewModel? tile = GetTileFromMenuItem(sender);
+            if (tile != null) PromptRenameTile(tile);
+        }
+
+        private void EditTile_Click(object sender, RoutedEventArgs e)
+        {
+            TileViewModel? tile = GetTileFromMenuItem(sender);
             if (tile == null) return;
 
-            var dialog = new RenameWindow(tile.Name) { Owner = this };
-            if (dialog.ShowDialog() == true)
+            _suppressDeactivateHide = true;
+            try
             {
-                tile.Name = dialog.NewName;
-                SaveConfiguration();
+                var dlg = new RenameWindow(
+                    tile.Name,
+                    "Редактировать плитку",
+                    "Название:",
+                    showPathEditor: true,
+                    currentPath: tile.Path)
+                {
+                    Owner = this
+                };
+
+                if (dlg.ShowDialog() == true)
+                {
+                    tile.Name = dlg.NewName;
+                    tile.Path = dlg.NewPath;
+                    tile.IconSource = ResolveTileIcon(tile.Path, tile.CustomIconPath);
+                    SaveConfiguration();
+                }
             }
+            finally
+            {
+                _suppressDeactivateHide = false;
+                this.Activate();
+            }
+        }
+
+        private void PromptRenameTile(TileViewModel tile)
+        {
+            _suppressDeactivateHide = true;
+            try
+            {
+                var dlg = new RenameWindow(tile.Name, "Переименовать плитку", "Новое название:") { Owner = this };
+                if (dlg.ShowDialog() == true)
+                {
+                    tile.Name = dlg.NewName;
+                    SaveConfiguration();
+                }
+            }
+            finally
+            {
+                _suppressDeactivateHide = false;
+                this.Activate();
+            }
+        }
+
+        private void ChangeTileIcon_Click(object sender, RoutedEventArgs e)
+        {
+            TileViewModel? tile = GetTileFromMenuItem(sender);
+            if (tile == null) return;
+
+            _suppressDeactivateHide = true;
+            try
+            {
+                var dlg = new OpenFileDialog
+                {
+                    Title = "Выберите иконку для плитки",
+                    Filter = "Изображения и иконки (*.png;*.ico;*.jpg;*.jpeg;*.webp)|*.png;*.ico;*.jpg;*.jpeg;*.webp|Все файлы (*.*)|*.*"
+                };
+
+                if (dlg.ShowDialog(this) == true)
+                {
+                    tile.CustomIconPath = dlg.FileName;
+                    tile.IconSource = ResolveTileIcon(tile.Path, tile.CustomIconPath);
+                    SaveConfiguration();
+                }
+            }
+            finally
+            {
+                _suppressDeactivateHide = false;
+                this.Activate();
+            }
+        }
+
+        private void ResetTileIcon_Click(object sender, RoutedEventArgs e)
+        {
+            TileViewModel? tile = GetTileFromMenuItem(sender);
+            if (tile == null) return;
+
+            tile.CustomIconPath = string.Empty;
+            tile.IconSource = ResolveTileIcon(tile.Path, null);
+            SaveConfiguration();
+        }
+
+        private void OpenFileLocation_Click(object sender, RoutedEventArgs e)
+        {
+            TileViewModel? tile = GetTileFromMenuItem(sender);
+            if (tile == null) return;
+
+            if (Directory.Exists(tile.Path))
+                Process.Start(new ProcessStartInfo { FileName = "explorer.exe", Arguments = $"\"{tile.Path}\"", UseShellExecute = true });
+            else if (File.Exists(tile.Path))
+                Process.Start(new ProcessStartInfo { FileName = "explorer.exe", Arguments = $"/select,\"{tile.Path}\"", UseShellExecute = true });
         }
 
         private void DeleteTile_Click(object sender, RoutedEventArgs e)
@@ -1086,16 +2006,24 @@ namespace FastPush
 
         private void Tile_Click(object sender, RoutedEventArgs e)
         {
-            if (sender is Button clickedButton && clickedButton.Tag is TileViewModel tile)
+            if (sender is not Button clickedButton || clickedButton.Tag is not TileViewModel tile)
+                return;
+
+            // В режиме правки клик по плитке не запускает игру случайно, а открывает переименование
+            if (IsEditMode)
             {
-                LaunchItem(tile.Path);
-                if (_design.HideAfterLaunch)
-                    AnimateAndHide();
+                if (!_isInternalDragging)
+                    PromptRenameTile(tile);
+                return;
             }
+
+            if (LaunchItem(tile.Path) && _design.HideAfterLaunch)
+                AnimateAndHide();
         }
 
-        private void LaunchItem(string path)
+        private bool LaunchItem(string path)
         {
+            _suppressDeactivateHide = true;
             try
             {
                 if (Directory.Exists(path))
@@ -1106,7 +2034,7 @@ namespace FastPush
                         Arguments = $"\"{path}\"",
                         UseShellExecute = true
                     });
-                    return;
+                    return true;
                 }
 
                 var startInfo = new ProcessStartInfo
@@ -1115,20 +2043,57 @@ namespace FastPush
                     UseShellExecute = true
                 };
 
-                string? workingDir = Path.GetDirectoryName(path);
-                if (!string.IsNullOrEmpty(workingDir) && Directory.Exists(workingDir))
-                    startInfo.WorkingDirectory = workingDir;
+                if (File.Exists(path))
+                {
+                    string? workingDir = System.IO.Path.GetDirectoryName(path);
+                    if (!string.IsNullOrEmpty(workingDir) && Directory.Exists(workingDir))
+                        startInfo.WorkingDirectory = workingDir;
+                }
 
                 Process.Start(startInfo);
+                return true;
+            }
+            catch (Win32Exception winEx) when (winEx.NativeErrorCode == 1223)
+            {
+                return false;
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"Не удалось открыть объект:\n{path}\n\nОшибка: {ex.Message}",
                                 "Nook", MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
+            }
+            finally
+            {
+                _suppressDeactivateHide = false;
             }
         }
 
-        // --- ГОРЯЧИЕ КЛАВИШИ И ТРЕЙ ---
+        // --- СКРЫТИЕ ПРИ ПОТЕРЕ ФОКУСА, ХОТКЕИ И ЖИЗНЕННЫЙ ЦИКЛ ---
+
+        private void HandleFocusLost()
+        {
+            if (_design.HideOnDeactivate &&
+                !IsEditMode &&
+                !_isDrawerOpen &&
+                !_suppressDeactivateHide &&
+                !_isExplicitExit &&
+                this.IsVisible)
+            {
+                AnimateAndHide();
+            }
+        }
+
+        protected override void OnDeactivated(EventArgs e)
+        {
+            base.OnDeactivated(e);
+            HandleFocusLost();
+        }
+
+        private void Window_Deactivated(object sender, EventArgs e)
+        {
+            HandleFocusLost();
+        }
 
         private IntPtr HwndHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
@@ -1140,17 +2105,33 @@ namespace FastPush
             return IntPtr.Zero;
         }
 
+        protected override void OnPreviewKeyDown(KeyEventArgs e)
+        {
+            if (_isRecordingHotkey)
+            {
+                HandleHotkeyRecording(e);
+                return;
+            }
+            base.OnPreviewKeyDown(e);
+        }
+
         private void Window_KeyDown(object sender, KeyEventArgs e)
         {
+            if (_isRecordingHotkey)
+            {
+                HandleHotkeyRecording(e);
+                return;
+            }
+
             if (e.Key == Key.Escape)
             {
-                // Если открыта шторка настроек — первый Esc плавно закрывает её, второй скрывает окно
-                if (_isDrawerOpen) CloseSettingsDrawer();
+                if (IsEditMode) SetEditMode(false);
+                else if (_isDrawerOpen) CloseSettingsDrawer();
                 else AnimateAndHide();
                 return;
             }
 
-            if (!_isDrawerOpen && e.Key >= Key.D1 && e.Key <= Key.D9)
+            if (!IsEditMode && !_isDrawerOpen && Keyboard.Modifiers == ModifierKeys.None && e.Key >= Key.D1 && e.Key <= Key.D9)
             {
                 int index = e.Key - Key.D1;
                 if (index < _categoryOrder.Count)
@@ -1194,6 +2175,7 @@ namespace FastPush
         protected override void OnClosed(EventArgs e)
         {
             StopBackgroundAnimations();
+            _clockTimer.Stop();
             _source?.RemoveHook(HwndHook);
             UnregisterHotKey(_windowHandle, HOTKEY_ID);
             TrayIcon.Dispose();

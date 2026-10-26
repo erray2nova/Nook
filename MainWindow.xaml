@@ -12,28 +12,89 @@
         ResizeMode="NoResize"
         Topmost="True"
         ShowInTaskbar="False"
-        KeyDown="Window_KeyDown">
+        KeyDown="Window_KeyDown"
+        Deactivated="Window_Deactivated">
 
     <Window.Resources>
-        <!-- Вкладки категорий сверху и вкладки внутри панели настроек -->
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+
+        <!-- Вкладка категории (с iPhone-анимацией покачивания и кнопками в режиме редактирования) -->
         <Style x:Key="CategoryTabStyle" TargetType="RadioButton">
             <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}"/>
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="FontSize" Value="14.5"/>
+            <Setter Property="FontSize" Value="14"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="Margin" Value="3,0"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="RadioButton">
-                        <Border x:Name="TabBorder"
-                                Background="{TemplateBinding Background}"
-                                CornerRadius="11"
-                                Padding="18,8"
-                                BorderBrush="Transparent"
-                                BorderThickness="1">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
+                        <Grid x:Name="TabRoot" RenderTransformOrigin="0.5,0.5">
+                            <Grid.RenderTransform>
+                                <RotateTransform Angle="0"/>
+                            </Grid.RenderTransform>
+
+                            <Border x:Name="TabBorder"
+                                    Background="{TemplateBinding Background}"
+                                    CornerRadius="11"
+                                    Padding="15,7"
+                                    BorderBrush="Transparent"
+                                    BorderThickness="1">
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <ContentPresenter VerticalAlignment="Center"/>
+
+                                    <!-- Мини-кнопки управления категорией в режиме редактирования -->
+                                    <StackPanel Orientation="Horizontal"
+                                                Margin="7,0,-4,0"
+                                                VerticalAlignment="Center"
+                                                Visibility="{Binding IsEditMode, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}">
+                                        <Button Tag="CatRenameBtn"
+                                                Content="✎"
+                                                ToolTip="Переименовать категорию"
+                                                Width="18"
+                                                Height="18"
+                                                Margin="0,0,3,0"
+                                                Cursor="Hand"
+                                                Click="CategoryInlineRename_Click">
+                                            <Button.Template>
+                                                <ControlTemplate TargetType="Button">
+                                                    <Border x:Name="RenBd" Background="#28000000" CornerRadius="9">
+                                                        <TextBlock Text="✎" FontSize="10" Foreground="{DynamicResource PrimaryTextBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="RenBd" Property="Background" Value="#55000000"/>
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Button.Template>
+                                        </Button>
+
+                                        <Button Tag="CatDeleteBtn"
+                                                Content="✕"
+                                                ToolTip="Удалить категорию"
+                                                Width="18"
+                                                Height="18"
+                                                Cursor="Hand"
+                                                Click="CategoryInlineDelete_Click">
+                                            <Button.Template>
+                                                <ControlTemplate TargetType="Button">
+                                                    <Border x:Name="DelBd" Background="#CCEF4444" CornerRadius="9">
+                                                        <TextBlock Text="✕" FontSize="9" FontWeight="Bold" Foreground="#FFFFFF" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="DelBd" Property="Background" Value="#FFDC2626"/>
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Button.Template>
+                                        </Button>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}"/>
@@ -43,6 +104,21 @@
                                 <Setter Property="Foreground" Value="{DynamicResource AccentForegroundBrush}"/>
                                 <Setter TargetName="TabBorder" Property="Background" Value="{DynamicResource AccentBrush}"/>
                             </Trigger>
+                            <DataTrigger Binding="{Binding IsEditMode, RelativeSource={RelativeSource AncestorType=Window}}" Value="True">
+                                <DataTrigger.EnterActions>
+                                    <BeginStoryboard Name="CatJiggleSb">
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="TabRoot"
+                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                             From="-1.2" To="1.2" Duration="0:0:0.14"
+                                                             AutoReverse="True" RepeatBehavior="Forever"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </DataTrigger.EnterActions>
+                                <DataTrigger.ExitActions>
+                                    <RemoveStoryboard BeginStoryboardName="CatJiggleSb"/>
+                                </DataTrigger.ExitActions>
+                            </DataTrigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -50,9 +126,13 @@
         </Style>
 
         <!-- Вкладки разделов внутри выезжающей панели настроек -->
-        <Style x:Key="DrawerSectionTabStyle" TargetType="RadioButton" BasedOn="{StaticResource CategoryTabStyle}">
+        <Style x:Key="DrawerSectionTabStyle" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}"/>
+            <Setter Property="Background" Value="Transparent"/>
             <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="Margin" Value="2,0"/>
+            <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="RadioButton">
@@ -77,10 +157,10 @@
             </Setter>
         </Style>
 
-<!-- Кнопка с иконкой (шестеренка / закрытие) -->
+        <!-- Кнопка с иконкой (шестеренка / закрытие) -->
         <Style x:Key="IconButtonStyle" TargetType="Button">
-            <Setter Property="Width" Value="40"/>
-            <Setter Property="Height" Value="40"/>
+            <Setter Property="Width" Value="38"/>
+            <Setter Property="Height" Value="38"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Background" Value="{DynamicResource HeaderSurfaceBrush}"/>
             <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}"/>
@@ -91,7 +171,7 @@
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{DynamicResource BorderSubtleBrush}"
                                 BorderThickness="1"
-                                CornerRadius="12"
+                                CornerRadius="11"
                                 RenderTransformOrigin="0.5,0.5">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
@@ -114,7 +194,42 @@
             </Setter>
         </Style>
 
-        <!-- Универсальная акцентная / вторичная кнопка -->
+        <!-- Кнопка-переключатель Режима Редактирования в шапке -->
+        <Style x:Key="EditHeaderToggleStyle" TargetType="ToggleButton">
+            <Setter Property="Height" Value="38"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Background" Value="{DynamicResource HeaderSurfaceBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="EditBd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{DynamicResource BorderSubtleBrush}"
+                                BorderThickness="1"
+                                CornerRadius="11"
+                                Padding="13,0">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="EditBd" Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
+                                <Setter TargetName="EditBd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="EditBd" Property="Background" Value="{DynamicResource AccentBrush}"/>
+                                <Setter TargetName="EditBd" Property="BorderBrush" Value="Transparent"/>
+                                <Setter Property="Foreground" Value="{DynamicResource AccentForegroundBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Кнопки действий -->
         <Style x:Key="PrimaryActionButtonStyle" TargetType="Button">
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="FontSize" Value="13.5"/>
@@ -177,11 +292,42 @@
             </Setter>
         </Style>
 
-        <!-- Карточка выбора стиля окна (4 темы) -->
+        <!-- Компактная кнопка внутри полосы категорий (+ и + Плитка) -->
+        <Style x:Key="CapsuleMiniButtonStyle" TargetType="Button">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}"/>
+            <Setter Property="Margin" Value="3,0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="MiniBd"
+                                Background="{DynamicResource InputSurfaceBrush}"
+                                BorderBrush="{DynamicResource BorderSubtleBrush}"
+                                BorderThickness="1"
+                                CornerRadius="10"
+                                Padding="11,6">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="MiniBd" Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
+                                <Setter TargetName="MiniBd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Карточка выбора темы и режима анимации -->
         <Style x:Key="ThemeCardRadioStyle" TargetType="RadioButton">
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Margin" Value="4"/>
             <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="RadioButton">
@@ -189,14 +335,14 @@
                                 Background="{DynamicResource InputSurfaceBrush}"
                                 BorderBrush="{DynamicResource BorderSubtleBrush}"
                                 BorderThickness="1.4"
-                                CornerRadius="12"
-                                Padding="12,10">
+                                CornerRadius="11"
+                                Padding="11,9">
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                <Ellipse Width="16" Height="16"
+                                <Ellipse Width="14" Height="14"
                                          Fill="{TemplateBinding Background}"
                                          Stroke="{DynamicResource BorderSubtleBrush}"
                                          StrokeThickness="1"
-                                         Margin="0,0,9,0"/>
+                                         Margin="0,0,8,0"/>
                                 <ContentPresenter VerticalAlignment="Center"/>
                             </StackPanel>
                         </Border>
@@ -214,7 +360,40 @@
             </Setter>
         </Style>
 
-        <!-- Кружок акцентного цвета (8 штук) -->
+        <Style x:Key="ModePillRadioStyle" TargetType="RadioButton">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Margin" Value="3"/>
+            <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}"/>
+            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="PillBd"
+                                Background="{DynamicResource InputSurfaceBrush}"
+                                BorderBrush="{DynamicResource BorderSubtleBrush}"
+                                BorderThickness="1.2"
+                                CornerRadius="10"
+                                Padding="10,8">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}"/>
+                                <Setter TargetName="PillBd" Property="Background" Value="{DynamicResource TileHoverSurfaceBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter Property="Foreground" Value="{DynamicResource AccentForegroundBrush}"/>
+                                <Setter TargetName="PillBd" Property="Background" Value="{DynamicResource AccentBrush}"/>
+                                <Setter TargetName="PillBd" Property="BorderBrush" Value="Transparent"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Кружок акцентного цвета -->
         <Style x:Key="AccentSwatchRadioStyle" TargetType="RadioButton">
             <Setter Property="Width" Value="34"/>
             <Setter Property="Height" Value="34"/>
@@ -248,11 +427,11 @@
             </Setter>
         </Style>
 
-        <!-- Плитка приложения с плавной hover-анимацией и акцентным свечением вокруг -->
+        <!-- Плитка приложения (hover-свечение + iPhone-покачивание в режиме редактирования) -->
         <Style x:Key="TileButtonStyle" TargetType="Button">
-            <Setter Property="Width" Value="140"/>
-            <Setter Property="Height" Value="140"/>
-            <Setter Property="Margin" Value="13"/>
+            <Setter Property="Width" Value="138"/>
+            <Setter Property="Height" Value="138"/>
+            <Setter Property="Margin" Value="12"/>
             <Setter Property="Background" Value="{DynamicResource TileSurfaceBrush}"/>
             <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}"/>
             <Setter Property="Cursor" Value="Hand"/>
@@ -264,10 +443,11 @@
                                 <TransformGroup>
                                     <ScaleTransform ScaleX="1" ScaleY="1"/>
                                     <TranslateTransform X="0" Y="0"/>
+                                    <RotateTransform Angle="0"/>
                                 </TransformGroup>
                             </Grid.RenderTransform>
 
-                            <!-- Ореол подсветки вокруг наведенной плитки -->
+                            <!-- Ореол свечения вокруг выбранной плитки -->
                             <Border x:Name="GlowLayer"
                                     Background="{DynamicResource AccentBrush}"
                                     CornerRadius="24"
@@ -279,14 +459,14 @@
                                 </Border.Effect>
                             </Border>
 
-                            <!-- Карточка самой плитки -->
+                            <!-- Корпус плитки -->
                             <Border x:Name="TileBorder"
                                     Background="{TemplateBinding Background}"
                                     CornerRadius="22"
                                     BorderBrush="{DynamicResource BorderSubtleBrush}"
                                     BorderThickness="1.5"
-                                    Padding="12">
-                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    Padding="10">
+                                <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
                             </Border>
                         </Grid>
 
@@ -341,6 +521,27 @@
                                 </BeginStoryboard>
                             </EventTrigger>
 
+                            <!-- Анимация покачивания плиток в стиле iPhone -->
+                            <DataTrigger Binding="{Binding IsEditMode, RelativeSource={RelativeSource AncestorType=Window}}" Value="True">
+                                <DataTrigger.EnterActions>
+                                    <BeginStoryboard Name="TileJiggleSb">
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="TileRoot"
+                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[2].(RotateTransform.Angle)"
+                                                             From="-1.9" To="1.9" Duration="0:0:0.13"
+                                                             AutoReverse="True" RepeatBehavior="Forever"/>
+                                            <DoubleAnimation Storyboard.TargetName="TileRoot"
+                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[1].(TranslateTransform.X)"
+                                                             From="-0.9" To="0.9" Duration="0:0:0.17"
+                                                             AutoReverse="True" RepeatBehavior="Forever"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </DataTrigger.EnterActions>
+                                <DataTrigger.ExitActions>
+                                    <RemoveStoryboard BeginStoryboardName="TileJiggleSb"/>
+                                </DataTrigger.ExitActions>
+                            </DataTrigger>
+
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="TileBorder" Property="Background" Value="{DynamicResource TileHoverSurfaceBrush}"/>
                                 <Setter TargetName="TileBorder" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
@@ -359,13 +560,14 @@
     <Grid>
         <!-- Системный трей -->
         <tb:TaskbarIcon x:Name="TrayIcon"
-                        ToolTipText="Nook • Beta 0.1 (Ctrl + Alt + Space)"
+                        ToolTipText="Nook • Beta 0.1"
                         TrayMouseDoubleClick="TrayIcon_DoubleClick">
             <tb:TaskbarIcon.ContextMenu>
                 <ContextMenu>
                     <MenuItem Header="Открыть / Скрыть Nook" Click="MenuOpen_Click"/>
+                    <MenuItem Header="Режим редактирования" Click="MenuEditMode_Click"/>
                     <MenuItem Header="Настройки" Click="MenuSettings_Click"/>
-                    <MenuItem Header="Перезагрузить конфиг" Click="MenuReload_Click"/>
+                    <MenuItem Header="Открыть папку конфига (AppData)" Click="OpenConfigFolder_Click"/>
                     <Separator/>
                     <MenuItem x:Name="AutoStartMenuItem"
                               Header="Запускать вместе с Windows"
@@ -377,12 +579,12 @@
             </tb:TaskbarIcon.ContextMenu>
         </tb:TaskbarIcon>
 
-        <!-- ГЛАВНЫЙ КОНТУР ОКНА -->
+        <!-- ГЛАВНЫЙ КОНТУР ОКНА (CornerRadius 12 синхронизирован с аппаратным скруглением DWM Windows 11) -->
         <Border x:Name="OverlayBorder"
                 Background="{DynamicResource BackgroundGradientBrush}"
                 BorderBrush="{DynamicResource BorderSubtleBrush}"
                 BorderThickness="1.2"
-                CornerRadius="20"
+                CornerRadius="12"
                 ClipToBounds="True"
                 AllowDrop="True"
                 DragEnter="Overlay_DragEnter"
@@ -394,8 +596,8 @@
                     <ScaleTransform x:Name="OverlayScale" ScaleX="1" ScaleY="1"/>
                 </Grid.RenderTransform>
 
-                <!-- ФОНОВЫЙ СЛОЙ 1: Анимированные пузыри/сферы в цвет палитры -->
-                <Canvas x:Name="BubblesCanvas" IsHitTestVisible="False" ClipToBounds="True">
+                <!-- ФОН 1: Аврора (Плавающие градиентные пузыри) -->
+                <Canvas x:Name="BubblesCanvas" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed">
                     <Ellipse Width="580" Height="580" Canvas.Left="-140" Canvas.Top="-160" Fill="{DynamicResource OrbPrimaryBrush}">
                         <Ellipse.CacheMode><BitmapCache RenderAtScale="0.3"/></Ellipse.CacheMode>
                         <Ellipse.RenderTransform>
@@ -418,8 +620,8 @@
                     </Ellipse>
                 </Canvas>
 
-                <!-- ФОНОВЫЙ СЛОЙ 2: Бесшовно плывущая тонкая геометрическая сетка -->
-                <Rectangle x:Name="GridPatternLayer" IsHitTestVisible="False">
+                <!-- ФОН 2: Движущаяся сетка -->
+                <Rectangle x:Name="GridPatternLayer" IsHitTestVisible="False" Visibility="Collapsed">
                     <Rectangle.Fill>
                         <DrawingBrush Viewport="0,0,48,48" ViewportUnits="Absolute" TileMode="Tile">
                             <DrawingBrush.Transform>
@@ -442,22 +644,38 @@
                     </Rectangle.Fill>
                 </Rectangle>
 
+                <!-- ФОН 3: Неоновый импульс (Расходящиеся волны) -->
+                <Grid x:Name="WavesLayer" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed">
+                    <Ellipse x:Name="WaveRing1" Width="340" Height="340" Stroke="{DynamicResource AccentBrush}" StrokeThickness="1.8" Opacity="0" RenderTransformOrigin="0.5,0.5" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <Ellipse.RenderTransform><ScaleTransform x:Name="Wave1Scale" ScaleX="0.3" ScaleY="0.3"/></Ellipse.RenderTransform>
+                    </Ellipse>
+                    <Ellipse x:Name="WaveRing2" Width="340" Height="340" Stroke="{DynamicResource AccentBrush}" StrokeThickness="1.5" Opacity="0" RenderTransformOrigin="0.5,0.5" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <Ellipse.RenderTransform><ScaleTransform x:Name="Wave2Scale" ScaleX="0.3" ScaleY="0.3"/></Ellipse.RenderTransform>
+                    </Ellipse>
+                    <Ellipse x:Name="WaveRing3" Width="340" Height="340" Stroke="{DynamicResource AccentBrush}" StrokeThickness="1.2" Opacity="0" RenderTransformOrigin="0.5,0.5" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <Ellipse.RenderTransform><ScaleTransform x:Name="Wave3Scale" ScaleX="0.3" ScaleY="0.3"/></Ellipse.RenderTransform>
+                    </Ellipse>
+                </Grid>
+
+                <!-- ФОН 4: Светящиеся частицы Боке (генерируются в коде) -->
+                <Canvas x:Name="BokehCanvas" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed"/>
+
                 <!-- ОСНОВНОЙ ИНТЕРФЕЙС ЛАУНЧЕРА -->
-                <Grid Margin="34,24,34,28">
+                <Grid Margin="32,22,32,26">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
                     <!-- ВЕРХНИЙ БАР -->
-                    <Grid Grid.Row="0" Margin="0,0,0,20">
+                    <Grid Grid.Row="0" Margin="0,0,0,18">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="200"/>
+                            <ColumnDefinition Width="230"/>
                             <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="200"/>
+                            <ColumnDefinition Width="260"/>
                         </Grid.ColumnDefinitions>
 
-                        <!-- Слева: Логотип, Название и версия beta 0.1 под ним -->
+                        <!-- Слева: Логотип, Название и beta 0.1 -->
                         <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                             <Border Width="38"
                                     Height="38"
@@ -478,14 +696,15 @@
                                            FontSize="18"
                                            FontWeight="Bold"
                                            Margin="0,-2,0,0"/>
-                                <TextBlock Text="beta 0.1"
+                                <TextBlock x:Name="SubHeaderStatusText"
+                                           Text="beta 0.1"
                                            Foreground="{DynamicResource SecondaryTextBrush}"
                                            FontSize="11.5"
                                            FontWeight="Medium"/>
                             </StackPanel>
                         </StackPanel>
 
-                        <!-- По центру: Полоса выбора категории -->
+                        <!-- По центру: Полоса категорий + кнопки добавления в режиме Ред. -->
                         <Border Grid.Column="1"
                                 Background="{DynamicResource HeaderSurfaceBrush}"
                                 BorderBrush="{DynamicResource BorderSubtleBrush}"
@@ -494,34 +713,191 @@
                                 Padding="5"
                                 HorizontalAlignment="Center"
                                 VerticalAlignment="Center">
-                            <ItemsControl x:Name="CategoriesContainer">
-                                <ItemsControl.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <StackPanel Orientation="Horizontal"/>
-                                    </ItemsPanelTemplate>
-                                </ItemsControl.ItemsPanel>
-                            </ItemsControl>
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <ScrollViewer HorizontalScrollBarVisibility="Hidden"
+                                              VerticalScrollBarVisibility="Disabled"
+                                              MaxWidth="520"
+                                              PreviewMouseWheel="Categories_PreviewMouseWheel">
+                                    <ItemsControl x:Name="CategoriesContainer">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <StackPanel Orientation="Horizontal"/>
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                    </ItemsControl>
+                                </ScrollViewer>
+
+                                <!-- Кнопки управления, появляющиеся в режиме редактирования -->
+                                <StackPanel Orientation="Horizontal"
+                                            VerticalAlignment="Center"
+                                            Visibility="{Binding IsEditMode, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}">
+                                    <Border Width="1" Height="20" Background="{DynamicResource BorderSubtleBrush}" Margin="5,0"/>
+                                    <Button Content="+ Вкладка"
+                                            ToolTip="Создать новую категорию"
+                                            Style="{StaticResource CapsuleMiniButtonStyle}"
+                                            Click="AddCategory_Click"/>
+                                    <Button Content="+ Плитка"
+                                            ToolTip="Добавить приложение, папку или ссылку"
+                                            Style="{StaticResource CapsuleMiniButtonStyle}"
+                                            Click="AddTileManual_Click"/>
+                                </StackPanel>
+                            </StackPanel>
                         </Border>
 
-                        <!-- Справа: Иконка шестеренки (Настройки) -->
-                        <Button Grid.Column="2"
-                                HorizontalAlignment="Right"
-                                VerticalAlignment="Center"
-                                Style="{StaticResource IconButtonStyle}"
-                                ToolTip="Настройки"
-                                Click="OpenSettingsBtn_Click">
-                            <Path Data="M12,8A4,4 0 0,1 16,12A4,4 0 0,1 12,16A4,4 0 0,1 8,12A4,4 0 0,1 12,8M12,10A2,2 0 0,0 10,12A2,2 0 0,0 12,14A2,2 0 0,0 14,12A2,2 0 0,0 12,10M10,22C9.75,22 9.54,21.82 9.5,21.58L9.13,18.93C8.5,18.68 7.96,18.34 7.44,17.94L4.95,18.95C4.73,19.03 4.46,18.95 4.34,18.73L2.34,15.27C2.21,15.05 2.27,14.78 2.46,14.63L4.57,12.97L4.5,12L4.57,11L2.46,9.37C2.27,9.22 2.21,8.95 2.34,8.73L4.34,5.27C4.46,5.05 4.73,4.96 4.95,5.05L7.44,6.05C7.96,5.66 8.5,5.32 9.13,5.07L9.5,2.42C9.54,2.18 9.75,2 10,2H14C14.25,2 14.46,2.18 14.5,2.42L14.87,5.07C15.5,5.32 16.04,5.66 16.56,6.05L19.05,5.05C19.27,4.96 19.54,5.05 19.66,5.27L21.66,8.73C21.79,8.95 21.73,9.22 21.54,9.37L19.43,11L19.5,12L19.43,13L21.54,14.63C21.73,14.78 21.79,15.05 21.66,15.27L19.66,18.73C19.54,18.95 19.27,19.04 19.05,18.95L16.56,17.95C16.04,18.34 15.5,18.68 14.87,18.93L14.5,21.58C14.46,21.82 14.25,22 14,22H10Z"
-                                  Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
-                                  Width="19"
-                                  Height="19"
-                                  Stretch="Uniform"/>
-                        </Button>
+                        <!-- Справа: Часы + Кнопка Редактирования + Шестеренка настроек -->
+                        <StackPanel Grid.Column="2"
+                                    Orientation="Horizontal"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Center">
+
+                            <!-- Часы -->
+                            <StackPanel x:Name="HeaderClockPanel"
+                                        VerticalAlignment="Center"
+                                        Margin="0,0,14,0">
+                                <TextBlock x:Name="ClockTimeText"
+                                           Text="00:00"
+                                           Foreground="{DynamicResource PrimaryTextBrush}"
+                                           FontSize="16.5"
+                                           FontWeight="Bold"
+                                           HorizontalAlignment="Right"
+                                           Margin="0,-1,0,0"/>
+                                <TextBlock x:Name="ClockDateText"
+                                           Text="пн, 1 янв"
+                                           Foreground="{DynamicResource SecondaryTextBrush}"
+                                           FontSize="11"
+                                           HorizontalAlignment="Right"/>
+                            </StackPanel>
+
+                            <!-- Кнопка входа в режим редактирования -->
+                            <ToggleButton x:Name="EditModeBtn"
+                                          Content="✎ Ред."
+                                          ToolTip="Режим редактирования категорий и плиток"
+                                          Style="{StaticResource EditHeaderToggleStyle}"
+                                          Margin="0,0,8,0"
+                                          Click="EditModeBtn_Click"/>
+
+                            <!-- Кнопка Настроек -->
+                            <Button Style="{StaticResource IconButtonStyle}"
+                                    ToolTip="Настройки"
+                                    Click="OpenSettingsBtn_Click">
+                                <Path Data="M12,8A4,4 0 0,1 16,12A4,4 0 0,1 12,16A4,4 0 0,1 8,12A4,4 0 0,1 12,8M12,10A2,2 0 0,0 10,12A2,2 0 0,0 12,14A2,2 0 0,0 14,12A2,2 0 0,0 12,10M10,22C9.75,22 9.54,21.82 9.5,21.58L9.13,18.93C8.5,18.68 7.96,18.34 7.44,17.94L4.95,18.95C4.73,19.03 4.46,18.95 4.34,18.73L2.34,15.27C2.21,15.05 2.27,14.78 2.46,14.63L4.57,12.97L4.5,12L4.57,11L2.46,9.37C2.27,9.22 2.21,8.95 2.34,8.73L4.34,5.27C4.46,5.05 4.73,4.96 4.95,5.05L7.44,6.05C7.96,5.66 8.5,5.32 9.13,5.07L9.5,2.42C9.54,2.18 9.75,2 10,2H14C14.25,2 14.46,2.18 14.5,2.42L14.87,5.07C15.5,5.32 16.04,5.66 16.56,6.05L19.05,5.05C19.27,4.96 19.54,5.05 19.66,5.27L21.66,8.73C21.79,8.95 21.73,9.22 21.54,9.37L19.43,11L19.5,12L19.43,13L21.54,14.63C21.73,14.78 21.79,15.05 21.66,15.27L19.66,18.73C19.54,18.95 19.27,19.04 19.05,18.95L16.56,17.95C16.04,18.34 15.5,18.68 14.87,18.93L14.5,21.58C14.46,21.82 14.25,22 14,22H10Z"
+                                      Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                      Width="18"
+                                      Height="18"
+                                      Stretch="Uniform"/>
+                            </Button>
+                        </StackPanel>
                     </Grid>
 
-                    <!-- ЭКРАН ПЛИТОК -->
-                    <Grid Grid.Row="1">
-                        <!-- Приглашение добавить плитки, если категория пуста -->
+                    <!-- РАБОЧАЯ ОБЛАСТЬ ПЛИТОК -->
+                    <Grid Grid.Row="1" Background="#01000000">
+                        <Grid.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="Добавить плитку..." Click="AddTileManual_Click"/>
+                                <MenuItem Header="Создать категорию..." Click="AddCategory_Click"/>
+                                <Separator/>
+                                <MenuItem Header="Режим редактирования" Click="MenuEditMode_Click"/>
+                            </ContextMenu>
+                        </Grid.ContextMenu>
+
+                        <!-- Сетка плиток -->
+                        <ScrollViewer x:Name="TilesScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <ItemsControl x:Name="TilesContainer" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel MaxWidth="980" HorizontalAlignment="Center"/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Style="{StaticResource TileButtonStyle}"
+                                                Tag="{Binding}"
+                                                ToolTip="{Binding Path}"
+                                                AllowDrop="True"
+                                                Click="Tile_Click"
+                                                PreviewMouseLeftButtonDown="Tile_PreviewMouseLeftButtonDown"
+                                                PreviewMouseMove="Tile_PreviewMouseMove"
+                                                PreviewMouseLeftButtonUp="Tile_PreviewMouseLeftButtonUp"
+                                                DragEnter="Tile_DragEnter"
+                                                DragOver="Tile_DragOver"
+                                                DragLeave="Tile_DragLeave"
+                                                Drop="Tile_Drop">
+
+                                            <Button.ContextMenu>
+                                                <ContextMenu>
+                                                    <MenuItem Header="Изменить название / путь..." Click="EditTile_Click"/>
+                                                    <MenuItem Header="Переименовать" Click="RenameTile_Click"/>
+                                                    <MenuItem Header="Сменить иконку..." Click="ChangeTileIcon_Click"/>
+                                                    <MenuItem Header="Открыть расположение файла" Click="OpenFileLocation_Click"/>
+                                                    <Separator/>
+                                                    <MenuItem Header="Удалить плитку" Click="DeleteTile_Click"/>
+                                                </ContextMenu>
+                                            </Button.ContextMenu>
+
+                                            <Grid>
+                                                <!-- Бейдж быстрого удаления (как на iOS в режиме редактирования) -->
+                                                <Button Tag="QuickDeleteBtn"
+                                                        Width="22"
+                                                        Height="22"
+                                                        HorizontalAlignment="Left"
+                                                        VerticalAlignment="Top"
+                                                        Panel.ZIndex="3"
+                                                        Cursor="Hand"
+                                                        ToolTip="Удалить плитку"
+                                                        Visibility="{Binding IsEditMode, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}"
+                                                        Click="QuickDeleteTileBtn_Click">
+                                                    <Button.Template>
+                                                        <ControlTemplate TargetType="Button">
+                                                            <Border x:Name="DelCircle" Background="#DDDC2626" CornerRadius="11">
+                                                                <TextBlock Text="✕" Foreground="#FFFFFF" FontSize="10" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                            </Border>
+                                                            <ControlTemplate.Triggers>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter TargetName="DelCircle" Property="Background" Value="#FFEF4444"/>
+                                                                </Trigger>
+                                                            </ControlTemplate.Triggers>
+                                                        </ControlTemplate>
+                                                    </Button.Template>
+                                                </Button>
+
+                                                <!-- Индикатор правки в правом верхнем углу в режиме Ред. -->
+                                                <Border Width="22"
+                                                        Height="22"
+                                                        CornerRadius="11"
+                                                        Background="{DynamicResource AccentSoftBrush}"
+                                                        HorizontalAlignment="Right"
+                                                        VerticalAlignment="Top"
+                                                        IsHitTestVisible="False"
+                                                        Visibility="{Binding IsEditMode, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}">
+                                                    <TextBlock Text="✎" FontSize="11" Foreground="{DynamicResource AccentBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                </Border>
+
+                                                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,4,0,0">
+                                                    <Image Source="{Binding IconSource}"
+                                                           Width="50"
+                                                           Height="50"
+                                                           Margin="0,0,0,10"
+                                                           RenderOptions.BitmapScalingMode="HighQuality"/>
+
+                                                    <TextBlock Text="{Binding Name}"
+                                                               Foreground="{DynamicResource PrimaryTextBrush}"
+                                                               FontSize="13.5"
+                                                               FontWeight="SemiBold"
+                                                               TextAlignment="Center"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               MaxWidth="112"/>
+                                                </StackPanel>
+                                            </Grid>
+                                        </Button>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+
+                        <!-- Приглашение добавить плитки (ПОВЕРХ ScrollViewer по ZIndex, поэтому кнопка работает безотказно) -->
                         <Border x:Name="EmptyStatePanel"
+                                Panel.ZIndex="5"
                                 Background="{DynamicResource CardSurfaceBrush}"
                                 BorderBrush="{DynamicResource BorderSubtleBrush}"
                                 BorderThickness="1.2"
@@ -555,7 +931,7 @@
                                            TextAlignment="Center"
                                            Margin="0,0,0,8"/>
 
-                                <TextBlock Text="Добавьте любимые программы или игры вручную, либо просто перетащите файлы и папки прямо в это окно."
+                                <TextBlock Text="Добавьте программы, папки или ссылки кнопкой ниже, либо включите «✎ Ред.» и перетащите ярлыки прямо в окно."
                                            Foreground="{DynamicResource SecondaryTextBrush}"
                                            FontSize="13"
                                            TextWrapping="Wrap"
@@ -568,50 +944,6 @@
                                         Click="AddTileManual_Click"/>
                             </StackPanel>
                         </Border>
-
-                        <!-- Сетка плиток -->
-                        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                            <ItemsControl x:Name="TilesContainer" HorizontalAlignment="Center" VerticalAlignment="Center">
-                                <ItemsControl.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <WrapPanel MaxWidth="980" HorizontalAlignment="Center"/>
-                                    </ItemsPanelTemplate>
-                                </ItemsControl.ItemsPanel>
-
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Button Style="{StaticResource TileButtonStyle}"
-                                                Tag="{Binding}"
-                                                Click="Tile_Click">
-
-                                            <Button.ContextMenu>
-                                                <ContextMenu>
-                                                    <MenuItem Header="Переименовать" Click="RenameTile_Click"/>
-                                                    <Separator/>
-                                                    <MenuItem Header="Удалить" Click="DeleteTile_Click"/>
-                                                </ContextMenu>
-                                            </Button.ContextMenu>
-
-                                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                                                <Image Source="{Binding IconSource}"
-                                                       Width="52"
-                                                       Height="52"
-                                                       Margin="0,0,0,12"
-                                                       RenderOptions.BitmapScalingMode="HighQuality"/>
-
-                                                <TextBlock Text="{Binding Name}"
-                                                           Foreground="{DynamicResource PrimaryTextBrush}"
-                                                           FontSize="14"
-                                                           FontWeight="SemiBold"
-                                                           TextAlignment="Center"
-                                                           TextTrimming="CharacterEllipsis"
-                                                           MaxWidth="112"/>
-                                            </StackPanel>
-                                        </Button>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-                        </ScrollViewer>
                     </Grid>
                 </Grid>
 
@@ -624,15 +956,15 @@
 
                 <!-- ВЫЕЗЖАЮЩАЯ СПРАВА НАЛЕВО ПАНЕЛЬ НАСТРОЕК -->
                 <Border x:Name="SettingsDrawer"
-                        Width="410"
+                        Width="420"
                         HorizontalAlignment="Right"
                         Background="{DynamicResource DrawerSurfaceBrush}"
                         BorderBrush="{DynamicResource BorderSubtleBrush}"
                         BorderThickness="1.2,0,0,0"
-                        Padding="26,24"
+                        Padding="26,22"
                         Visibility="Collapsed">
                     <Border.RenderTransform>
-                        <TranslateTransform x:Name="DrawerTranslate" X="420" Y="0"/>
+                        <TranslateTransform x:Name="DrawerTranslate" X="430" Y="0"/>
                     </Border.RenderTransform>
 
                     <Grid>
@@ -643,7 +975,7 @@
                         </Grid.RowDefinitions>
 
                         <!-- Шапка панели настроек -->
-                        <Grid Grid.Row="0" Margin="0,0,0,18">
+                        <Grid Grid.Row="0" Margin="0,0,0,16">
                             <TextBlock Text="Настройки"
                                        Foreground="{DynamicResource PrimaryTextBrush}"
                                        FontSize="19"
@@ -659,14 +991,14 @@
                                     Click="CloseSettingsBtn_Click"/>
                         </Grid>
 
-                        <!-- Категории внутри настроек: Оформление | Основные | Другое -->
+                        <!-- Вкладки: Оформление | Основные | Другое -->
                         <Border Grid.Row="1"
                                 Background="{DynamicResource HeaderSurfaceBrush}"
                                 BorderBrush="{DynamicResource BorderSubtleBrush}"
                                 BorderThickness="1"
                                 CornerRadius="12"
                                 Padding="4"
-                                Margin="0,0,0,20"
+                                Margin="0,0,0,18"
                                 HorizontalAlignment="Stretch">
                             <UniformGrid Columns="3">
                                 <RadioButton x:Name="TabAppearanceRadio"
@@ -691,7 +1023,7 @@
                             </UniformGrid>
                         </Border>
 
-                        <!-- Контент вкладок настроек -->
+                        <!-- Содержимое разделов настроек -->
                         <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
                             <Grid>
                                 <!-- 1. ОФОРМЛЕНИЕ -->
@@ -700,9 +1032,9 @@
                                                Foreground="{DynamicResource PrimaryTextBrush}"
                                                FontSize="13.5"
                                                FontWeight="SemiBold"
-                                               Margin="2,0,0,8"/>
+                                               Margin="2,0,0,6"/>
 
-                                    <UniformGrid x:Name="ThemesPanel" Columns="2" Margin="-4,0,-4,18">
+                                    <UniformGrid x:Name="ThemesPanel" Columns="2" Margin="-4,0,-4,16">
                                         <RadioButton Content="Черный" Tag="Black" Background="#121216" GroupName="WindowThemes" Style="{StaticResource ThemeCardRadioStyle}" Click="ThemeOption_Click"/>
                                         <RadioButton Content="Белый" Tag="White" Background="#F5F6FA" GroupName="WindowThemes" Style="{StaticResource ThemeCardRadioStyle}" Click="ThemeOption_Click"/>
                                         <RadioButton Content="Espresso" Tag="Espresso" Background="#2B1D17" GroupName="WindowThemes" Style="{StaticResource ThemeCardRadioStyle}" Click="ThemeOption_Click"/>
@@ -713,9 +1045,9 @@
                                                Foreground="{DynamicResource PrimaryTextBrush}"
                                                FontSize="13.5"
                                                FontWeight="SemiBold"
-                                               Margin="2,0,0,8"/>
+                                               Margin="2,0,0,6"/>
 
-                                    <WrapPanel x:Name="AccentsPanel" Margin="-4,0,-4,20">
+                                    <WrapPanel x:Name="AccentsPanel" Margin="-4,0,-4,16">
                                         <RadioButton Background="#EC4899" Tag="#EC4899" ToolTip="Розовый (Sakura)" GroupName="AccentSwatches" Style="{StaticResource AccentSwatchRadioStyle}" Click="AccentSwatch_Click"/>
                                         <RadioButton Background="#10B981" Tag="#10B981" ToolTip="Изумрудный" GroupName="AccentSwatches" Style="{StaticResource AccentSwatchRadioStyle}" Click="AccentSwatch_Click"/>
                                         <RadioButton Background="#3B82F6" Tag="#3B82F6" ToolTip="Сапфир" GroupName="AccentSwatches" Style="{StaticResource AccentSwatchRadioStyle}" Click="AccentSwatch_Click"/>
@@ -726,71 +1058,106 @@
                                         <RadioButton Background="#EF4444" Tag="#EF4444" ToolTip="Рубиновый" GroupName="AccentSwatches" Style="{StaticResource AccentSwatchRadioStyle}" Click="AccentSwatch_Click"/>
                                     </WrapPanel>
 
-                                    <Grid Margin="2,0,2,6">
-                                        <TextBlock Text="Плотность Blur-стекла"
+                                    <Grid Margin="2,0,2,4">
+                                        <TextBlock Text="Плотность стекла (0% стекло — 100% матовый)"
                                                    Foreground="{DynamicResource PrimaryTextBrush}"
-                                                   FontSize="13.5"
+                                                   FontSize="13"
                                                    FontWeight="SemiBold"/>
                                         <TextBlock x:Name="BlurValueText"
-                                                   Text="82%"
+                                                   Text="72%"
                                                    Foreground="{DynamicResource AccentBrush}"
-                                                   FontSize="13.5"
+                                                   FontSize="13"
                                                    FontWeight="Bold"
                                                    HorizontalAlignment="Right"/>
                                     </Grid>
 
                                     <Slider x:Name="BlurSlider"
-                                            Minimum="25"
-                                            Maximum="95"
+                                            Minimum="0"
+                                            Maximum="100"
                                             TickFrequency="1"
                                             IsSnapToTickEnabled="True"
-                                            Value="82"
-                                            Margin="0,0,0,22"
+                                            Value="72"
+                                            Margin="0,0,0,18"
                                             ValueChanged="BlurSlider_ValueChanged"/>
 
-                                    <TextBlock Text="Анимации заднего плана"
+                                    <TextBlock Text="Анимация заднего плана"
                                                Foreground="{DynamicResource PrimaryTextBrush}"
                                                FontSize="13.5"
                                                FontWeight="SemiBold"
-                                               Margin="2,0,0,12"/>
+                                               Margin="2,0,0,6"/>
 
-                                    <Grid Margin="2,0,2,14">
+                                    <UniformGrid x:Name="BgModesPanel" Columns="3" Margin="-3,0,-3,18">
+                                        <RadioButton Content="Комбо" Tag="Combo" GroupName="BgAnimModes" Style="{StaticResource ModePillRadioStyle}" Click="BgMode_Click"/>
+                                        <RadioButton Content="Аврора" Tag="Aurora" GroupName="BgAnimModes" Style="{StaticResource ModePillRadioStyle}" Click="BgMode_Click"/>
+                                        <RadioButton Content="Сетка" Tag="Grid" GroupName="BgAnimModes" Style="{StaticResource ModePillRadioStyle}" Click="BgMode_Click"/>
+                                        <RadioButton Content="Импульс" Tag="Waves" GroupName="BgAnimModes" Style="{StaticResource ModePillRadioStyle}" Click="BgMode_Click"/>
+                                        <RadioButton Content="Частицы" Tag="Bokeh" GroupName="BgAnimModes" Style="{StaticResource ModePillRadioStyle}" Click="BgMode_Click"/>
+                                        <RadioButton Content="Статика" Tag="None" GroupName="BgAnimModes" Style="{StaticResource ModePillRadioStyle}" Click="BgMode_Click"/>
+                                    </UniformGrid>
+
+                                    <Grid Margin="2,0,2,6">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <StackPanel Grid.Column="0" Margin="0,0,12,0">
-                                            <TextBlock Text="Градиентные пузыри" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="13.5"/>
-                                            <TextBlock Text="Плавное свечение в тон темы и акцента" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11.5"/>
+                                            <TextBlock Text="Показывать часы в шапке" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="13.5"/>
+                                            <TextBlock Text="Время и дата в правом верхнем углу" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11.5"/>
                                         </StackPanel>
-                                        <CheckBox x:Name="BubblesToggle" Grid.Column="1" Style="{StaticResource ThemedSwitchStyle}" VerticalAlignment="Center" Click="DesignToggle_Click"/>
-                                    </Grid>
-
-                                    <Grid Margin="2,0,2,8">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <StackPanel Grid.Column="0" Margin="0,0,12,0">
-                                            <TextBlock Text="Движущаяся сетка" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="13.5"/>
-                                            <TextBlock Text="Тонкий геометрический паттерн на фоне" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11.5"/>
-                                        </StackPanel>
-                                        <CheckBox x:Name="GridToggle" Grid.Column="1" Style="{StaticResource ThemedSwitchStyle}" VerticalAlignment="Center" Click="DesignToggle_Click"/>
+                                        <CheckBox x:Name="ShowClockToggle" Grid.Column="1" Style="{StaticResource ThemedSwitchStyle}" VerticalAlignment="Center" Click="DesignToggle_Click"/>
                                     </Grid>
                                 </StackPanel>
 
                                 <!-- 2. ОСНОВНЫЕ -->
                                 <StackPanel x:Name="PanelGeneral" Visibility="Collapsed">
-                                    <Grid Margin="2,0,2,16">
+                                    <TextBlock Text="Горячая клавиша вызова"
+                                               Foreground="{DynamicResource PrimaryTextBrush}"
+                                               FontSize="13.5"
+                                               FontWeight="SemiBold"
+                                               Margin="2,0,0,8"/>
+
+                                    <Grid Margin="0,0,0,20">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <StackPanel Grid.Column="0" Margin="0,0,12,0">
-                                            <TextBlock Text="Запускать вместе с Windows" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="13.5"/>
-                                            <TextBlock Text="Тихий старт в системный трей" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11.5"/>
-                                        </StackPanel>
-                                        <CheckBox x:Name="AutoStartToggle" Grid.Column="1" Style="{StaticResource ThemedSwitchStyle}" VerticalAlignment="Center" Click="AutoStartToggle_Click"/>
+
+                                        <Button x:Name="RecordHotkeyButton"
+                                                Grid.Column="0"
+                                                Content="Ctrl + Alt + Space"
+                                                Cursor="Hand"
+                                                Margin="0,0,8,0"
+                                                Click="RecordHotkeyButton_Click">
+                                            <Button.Template>
+                                                <ControlTemplate TargetType="Button">
+                                                    <Border x:Name="HkBd"
+                                                            Background="{DynamicResource InputSurfaceBrush}"
+                                                            BorderBrush="{DynamicResource BorderSubtleBrush}"
+                                                            BorderThickness="1.3"
+                                                            CornerRadius="11"
+                                                            Padding="14,10">
+                                                        <TextBlock Text="{TemplateBinding Content}"
+                                                                   Foreground="{DynamicResource AccentBrush}"
+                                                                   FontSize="13.5"
+                                                                   FontWeight="Bold"
+                                                                   HorizontalAlignment="Center"/>
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="HkBd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Button.Template>
+                                        </Button>
+
+                                        <Button Grid.Column="1"
+                                                Content="↺"
+                                                ToolTip="Вернуть Ctrl + Alt + Space"
+                                                Width="40"
+                                                Height="40"
+                                                Style="{StaticResource IconButtonStyle}"
+                                                Click="ResetHotkeyBtn_Click"/>
                                     </Grid>
 
                                     <Grid Margin="2,0,2,16">
@@ -799,8 +1166,20 @@
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <StackPanel Grid.Column="0" Margin="0,0,12,0">
-                                            <TextBlock Text="Скрывать после запуска" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="13.5"/>
-                                            <TextBlock Text="Сворачивать окно при клике по плитке" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11.5"/>
+                                            <TextBlock Text="Скрывать при потере фокуса" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="13.5"/>
+                                            <TextBlock Text="В режиме «✎ Ред.» окно остается закрепленным" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11.5"/>
+                                        </StackPanel>
+                                        <CheckBox x:Name="HideOnDeactivateToggle" Grid.Column="1" Style="{StaticResource ThemedSwitchStyle}" VerticalAlignment="Center" Click="DesignToggle_Click"/>
+                                    </Grid>
+
+                                    <Grid Margin="2,0,2,16">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                                            <TextBlock Text="Скрывать после запуска плитки" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="13.5"/>
+                                            <TextBlock Text="Сворачивать оверлей при открытии программы" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11.5"/>
                                         </StackPanel>
                                         <CheckBox x:Name="HideAfterLaunchToggle" Grid.Column="1" Style="{StaticResource ThemedSwitchStyle}" VerticalAlignment="Center" Click="DesignToggle_Click"/>
                                     </Grid>
@@ -811,23 +1190,23 @@
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <StackPanel Grid.Column="0" Margin="0,0,12,0">
-                                            <TextBlock Text="Плавные переходы окна" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="13.5"/>
-                                            <TextBlock Text="Анимация открытия оверлея и вкладок" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11.5"/>
+                                            <TextBlock Text="Плавные переходы интерфейса" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="13.5"/>
+                                            <TextBlock Text="Анимация всплытия окна и смены категорий" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11.5"/>
                                         </StackPanel>
                                         <CheckBox x:Name="SmoothAnimToggle" Grid.Column="1" Style="{StaticResource ThemedSwitchStyle}" VerticalAlignment="Center" Click="DesignToggle_Click"/>
                                     </Grid>
 
-                                    <Border Background="{DynamicResource CardSurfaceBrush}"
-                                            BorderBrush="{DynamicResource BorderSubtleBrush}"
-                                            BorderThickness="1"
-                                            CornerRadius="12"
-                                            Padding="14,12"
-                                            Margin="0,6,0,0">
-                                        <StackPanel>
-                                            <TextBlock Text="Быстрый вызов" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11.5" Margin="0,0,0,3"/>
-                                            <TextBlock Text="Ctrl + Alt + Space" Foreground="{DynamicResource AccentBrush}" FontSize="14.5" FontWeight="Bold"/>
+                                    <Grid Margin="2,0,2,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                                            <TextBlock Text="Запускать вместе с Windows" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="13.5"/>
+                                            <TextBlock Text="Тихий фоновый старт сразу в системный трей" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11.5"/>
                                         </StackPanel>
-                                    </Border>
+                                        <CheckBox x:Name="AutoStartToggle" Grid.Column="1" Style="{StaticResource ThemedSwitchStyle}" VerticalAlignment="Center" Click="AutoStartToggle_Click"/>
+                                    </Grid>
                                 </StackPanel>
 
                                 <!-- 3. ДРУГОЕ -->
@@ -837,22 +1216,23 @@
                                             BorderThickness="1"
                                             CornerRadius="14"
                                             Padding="16"
-                                            Margin="0,0,0,18">
+                                            Margin="0,0,0,16">
                                         <StackPanel Orientation="Horizontal">
                                             <Border Width="42" Height="42" CornerRadius="12" Background="{DynamicResource AccentBrush}" Margin="0,0,14,0">
                                                 <TextBlock Text="N" Foreground="{DynamicResource AccentForegroundBrush}" FontSize="20" FontWeight="ExtraBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                             </Border>
                                             <StackPanel VerticalAlignment="Center">
                                                 <TextBlock Text="Nook Launcher" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="15" FontWeight="Bold"/>
-                                                <TextBlock Text="Версия Beta 0.1 • Легкий лаунчер" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="12" Margin="0,2,0,0"/>
+                                                <TextBlock Text="Beta 0.1 • Данные в %LocalAppData%\Nook" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11.5" Margin="0,2,0,0"/>
                                             </StackPanel>
                                         </StackPanel>
                                     </Border>
 
-                                    <Button Content="Добавить плитку в текущую вкладку" Style="{StaticResource SecondaryActionButtonStyle}" Click="AddTileManual_Click"/>
-                                    <Button Content="Перезагрузить config.json" Style="{StaticResource SecondaryActionButtonStyle}" Click="MenuReload_Click"/>
-                                    <Button Content="Открыть папку конфигурации" Style="{StaticResource SecondaryActionButtonStyle}" Click="OpenConfigFolder_Click"/>
-                                    <Button Content="Сбросить оформление по умолчанию" Style="{StaticResource SecondaryActionButtonStyle}" Click="ResetDesign_Click"/>
+                                    <Button Content="➕ Добавить плитку вручную" Style="{StaticResource SecondaryActionButtonStyle}" Click="AddTileManual_Click"/>
+                                    <Button Content="📁 Создать новую категорию" Style="{StaticResource SecondaryActionButtonStyle}" Click="AddCategory_Click"/>
+                                    <Button Content="📂 Открыть папку конфига (AppData\Local\Nook)" Style="{StaticResource SecondaryActionButtonStyle}" Click="OpenConfigFolder_Click"/>
+                                    <Button Content="🔄 Перезагрузить config.json" Style="{StaticResource SecondaryActionButtonStyle}" Click="MenuReload_Click"/>
+                                    <Button Content="↺ Сбросить настройки по умолчанию" Style="{StaticResource SecondaryActionButtonStyle}" Click="ResetDesign_Click"/>
                                 </StackPanel>
                             </Grid>
                         </ScrollViewer>
