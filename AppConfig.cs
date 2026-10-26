@@ -31,8 +31,9 @@ namespace FastPush
         public double WindowWidth { get; set; } = 1280;
         public double WindowHeight { get; set; } = 720;
 
-        // Combo | Aurora | Grid | Waves | Bokeh | None
+        // Legacy single-mode setting retained for older configuration files.
         public string BackgroundMode { get; set; } = "Combo";
+        public List<string>? BackgroundEffects { get; set; }
 
         public bool ShowClock { get; set; } = true;
         public bool HideOnDeactivate { get; set; } = true;

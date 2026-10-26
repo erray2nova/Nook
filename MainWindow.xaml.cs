@@ -12,6 +12,7 @@ using System.Text.Json;
 using System.Text.Unicode;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -160,9 +161,17 @@ namespace FastPush
         private Point _catDragStartPoint;
         private string? _potentialDraggedCategory;
 
-        // Анимация Боке и Часы
+        // Background animation elements and clock.
         private readonly List<(TranslateTransform MoveY, TranslateTransform SwayX, double SpeedSec, double SwayAmount, double StartY)> _bokehParticles = new();
+        private readonly List<TranslateTransform> _cometTransforms = new();
+        private readonly List<(TranslateTransform X, TranslateTransform Y, double XAmount, double YAmount, double Duration)> _floatingLights = new();
+        private readonly List<(FrameworkElement Element, ScaleTransform Scale, double Duration, double Delay)> _sparkles = new();
+        private readonly List<(FrameworkElement Element, double XRatio, double YRatio)> _responsiveBackgroundElements = new();
         private readonly DispatcherTimer _clockTimer = new();
+        private static readonly string[] BackgroundEffectNames =
+        {
+            "Aurora", "Grid", "Waves", "Bokeh", "Comets", "FloatingLights", "Pulse", "Sparkles"
+        };
 
         private DesignSettings _design = new();
         private readonly Dictionary<string, ObservableCollection<TileViewModel>> _categoriesMap = new();
@@ -187,6 +196,7 @@ namespace FastPush
             };
             TrayIcon.Icon = System.Drawing.SystemIcons.Application;
             InitializeBokehParticles();
+            InitializeAdditionalBackgroundEffects();
 
             LoadConfiguration();
             SyncSettingsUI();
@@ -380,7 +390,7 @@ namespace FastPush
             Application.Current.Resources["OrbSecondaryBrush"] = orb2;
 
             HeaderClockPanel.Visibility = _design.ShowClock ? Visibility.Visible : Visibility.Collapsed;
-            TrayIcon.ToolTipText = $"Nook • Beta 0.3 ({_design.HotkeyDisplay})";
+            TrayIcon.ToolTipText = $"Nook • Beta 4.1 ({_design.HotkeyDisplay})";
 
             UpdateAcrylicBlur();
         }
@@ -454,17 +464,17 @@ namespace FastPush
             }
         }
 
-        // --- 6 РЕЖИМОВ АНИМАЦИИ ЗАДНЕГО ПЛАНА ---
+        // --- 8 СОЧЕТАЕМЫХ ЭФФЕКТОВ ЗАДНЕГО ПЛАНА ---
 
         private void InitializeBokehParticles()
         {
-            double[] xPositions = { 90, 230, 390, 540, 710, 860, 1020, 1150, 320, 940 };
-            double[] sizes = { 18, 34, 24, 44, 20, 38, 26, 30, 16, 40 };
-            double[] speeds = { 11, 15, 12.5, 17, 10.5, 14, 13, 16, 9.5, 15.5 };
-            double[] sways = { 28, -34, 22, -30, 26, -24, 32, -26, 20, -32 };
-            double[] startOffsets = { 680, 520, 730, 380, 610, 290, 690, 440, 560, 220 };
+            double[] xRatios = { 0.08, 0.23, 0.39, 0.55, 0.72, 0.86, 0.94 };
+            double[] sizes = { 26, 42, 32, 54, 28, 46, 34 };
+            double[] speeds = { 18, 23, 20, 26, 17, 22, 25 };
+            double[] sways = { 18, -22, 16, -20, 21, -17, 19 };
+            double[] startOffsets = { 540, 380, 610, 250, 470, 320, 580 };
 
-            for (int i = 0; i < xPositions.Length; i++)
+            for (int i = 0; i < xRatios.Length; i++)
             {
                 var moveY = new TranslateTransform(0, startOffsets[i]);
                 var swayX = new TranslateTransform(0, 0);
@@ -476,34 +486,169 @@ namespace FastPush
                 {
                     Width = sizes[i],
                     Height = sizes[i],
-                    Opacity = 0.24,
+                    Opacity = 0.48,
                     RenderTransform = group,
-                    CacheMode = new BitmapCache(0.5)
+                    CacheMode = new BitmapCache(0.35)
                 };
-                circle.SetResourceReference(Shape.FillProperty, "AccentBrush");
+                circle.SetResourceReference(Shape.FillProperty, "OrbSecondaryBrush");
 
-                Canvas.SetLeft(circle, xPositions[i]);
+                Canvas.SetLeft(circle, xRatios[i] * 1280);
                 Canvas.SetTop(circle, 0);
                 BokehCanvas.Children.Add(circle);
+                _responsiveBackgroundElements.Add((circle, xRatios[i], 0));
 
                 _bokehParticles.Add((moveY, swayX, speeds[i], sways[i], startOffsets[i]));
             }
         }
 
+        private void InitializeAdditionalBackgroundEffects()
+        {
+            double[] cometTops = { 0.2, 0.52, 0.78 };
+            double[] cometWidths = { 190, 250, 160 };
+            for (int i = 0; i < cometTops.Length; i++)
+            {
+                var moveX = new TranslateTransform();
+                var transformGroup = new TransformGroup();
+                transformGroup.Children.Add(new RotateTransform(-12 + i * 7));
+                transformGroup.Children.Add(moveX);
+                var streak = new Rectangle
+                {
+                    Width = cometWidths[i],
+                    Height = 1.5,
+                    Opacity = 0.24,
+                    RenderTransformOrigin = new Point(0.5, 0.5),
+                    RenderTransform = transformGroup,
+                    Fill = new LinearGradientBrush
+                    {
+                        StartPoint = new Point(0, 0.5),
+                        EndPoint = new Point(1, 0.5),
+                        GradientStops =
+                        {
+                            new GradientStop(Color.FromArgb(0, 255, 255, 255), 0),
+                            new GradientStop(Color.FromArgb(190, 255, 255, 255), 1)
+                        }
+                    }
+                };
+                Canvas.SetLeft(streak, -cometWidths[i]);
+                Canvas.SetTop(streak, cometTops[i] * 720);
+                CometsCanvas.Children.Add(streak);
+                _responsiveBackgroundElements.Add((streak, -cometWidths[i] / 1280, cometTops[i]));
+                _cometTransforms.Add(moveX);
+            }
+
+            double[] lightX = { 0.09, 0.28, 0.49, 0.74, 0.91 };
+            double[] lightY = { 0.18, 0.7, 0.25, 0.57, 0.36 };
+            for (int i = 0; i < lightX.Length; i++)
+            {
+                var moveX = new TranslateTransform();
+                var moveY = new TranslateTransform();
+                var transform = new TransformGroup();
+                transform.Children.Add(moveX);
+                transform.Children.Add(moveY);
+
+                var light = new Ellipse
+                {
+                    Width = 20 + i % 3 * 10,
+                    Height = 20 + i % 3 * 10,
+                    Opacity = 0.26,
+                    RenderTransform = transform
+                };
+                light.SetResourceReference(Shape.FillProperty, "OrbSecondaryBrush");
+                light.CacheMode = new BitmapCache(0.35);
+                Canvas.SetLeft(light, lightX[i] * 1280);
+                Canvas.SetTop(light, lightY[i] * 720);
+                FloatingLightsCanvas.Children.Add(light);
+                _responsiveBackgroundElements.Add((light, lightX[i], lightY[i]));
+                _floatingLights.Add((moveX, moveY, 18 + i % 3 * 8, 14 + i % 4 * 5, 9 + i % 3 * 2));
+            }
+
+            PulseGlow.SetResourceReference(Shape.FillProperty, "OrbPrimaryBrush");
+
+            double[] sparkleX = { 0.08, 0.2, 0.34, 0.47, 0.61, 0.73, 0.86, 0.95, 0.28, 0.68 };
+            double[] sparkleY = { 0.12, 0.35, 0.68, 0.2, 0.82, 0.48, 0.15, 0.62, 0.9, 0.32 };
+            for (int i = 0; i < sparkleX.Length; i++)
+            {
+                var scale = new ScaleTransform(0.45, 0.45);
+                var sparkle = new System.Windows.Shapes.Path
+                {
+                    Data = Geometry.Parse("M5,0 L6.4,3.6 10,5 6.4,6.4 5,10 3.6,6.4 0,5 3.6,3.6 Z"),
+                    Width = 10,
+                    Height = 10,
+                    Opacity = 0.12,
+                    RenderTransform = scale,
+                    RenderTransformOrigin = new Point(0.5, 0.5)
+                };
+                sparkle.SetResourceReference(Shape.FillProperty, "AccentBrush");
+                Canvas.SetLeft(sparkle, sparkleX[i] * 1280);
+                Canvas.SetTop(sparkle, sparkleY[i] * 720);
+                SparklesCanvas.Children.Add(sparkle);
+                _responsiveBackgroundElements.Add((sparkle, sparkleX[i], sparkleY[i]));
+                _sparkles.Add((sparkle, scale, 2.8 + i % 4 * 0.7, i % 6 * 0.6));
+            }
+        }
+
+        private void UpdateBackgroundEffectLayout()
+        {
+            double width = ActualWidth > 0 ? ActualWidth : Width;
+            double height = ActualHeight > 0 ? ActualHeight : Height;
+            double scaleX = width / 1280;
+            double scaleY = height / 720;
+
+            foreach (var item in _responsiveBackgroundElements)
+            {
+                Canvas.SetLeft(item.Element, item.XRatio * 1280 * scaleX);
+                Canvas.SetTop(item.Element, item.YRatio * 720 * scaleY);
+            }
+        }
+
+        private List<string> GetBackgroundEffects()
+        {
+            if (_design.BackgroundEffects == null)
+            {
+                _design.BackgroundEffects = _design.BackgroundMode switch
+                {
+                    "Aurora" => new List<string> { "Aurora" },
+                    "Grid" => new List<string> { "Grid" },
+                    "Waves" => new List<string> { "Waves" },
+                    "Bokeh" => new List<string> { "Bokeh" },
+                    "None" => new List<string>(),
+                    _ => new List<string> { "Aurora", "Grid" }
+                };
+            }
+
+            var allowedEffects = new HashSet<string>(BackgroundEffectNames, StringComparer.OrdinalIgnoreCase);
+            _design.BackgroundEffects = _design.BackgroundEffects
+                .Where(allowedEffects.Contains)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(2)
+                .ToList();
+            _design.BackgroundMode = "Custom";
+            return _design.BackgroundEffects;
+        }
+
         private void UpdateBackgroundAnimations()
         {
             StopBackgroundAnimations();
+            UpdateBackgroundEffectLayout();
 
-            string mode = _design.BackgroundMode ?? "Combo";
-            bool useBubbles = mode is "Combo" or "Aurora";
-            bool useGrid = mode is "Combo" or "Grid";
-            bool useWaves = mode == "Waves";
-            bool useBokeh = mode == "Bokeh";
+            List<string> effects = GetBackgroundEffects();
+            bool useBubbles = effects.Contains("Aurora", StringComparer.OrdinalIgnoreCase);
+            bool useGrid = effects.Contains("Grid", StringComparer.OrdinalIgnoreCase);
+            bool useWaves = effects.Contains("Waves", StringComparer.OrdinalIgnoreCase);
+            bool useBokeh = effects.Contains("Bokeh", StringComparer.OrdinalIgnoreCase);
+            bool useComets = effects.Contains("Comets", StringComparer.OrdinalIgnoreCase);
+            bool useFloatingLights = effects.Contains("FloatingLights", StringComparer.OrdinalIgnoreCase);
+            bool usePulse = effects.Contains("Pulse", StringComparer.OrdinalIgnoreCase);
+            bool useSparkles = effects.Contains("Sparkles", StringComparer.OrdinalIgnoreCase);
 
             BubblesCanvas.Visibility = useBubbles ? Visibility.Visible : Visibility.Collapsed;
             GridPatternLayer.Visibility = useGrid ? Visibility.Visible : Visibility.Collapsed;
             WavesLayer.Visibility = useWaves ? Visibility.Visible : Visibility.Collapsed;
             BokehCanvas.Visibility = useBokeh ? Visibility.Visible : Visibility.Collapsed;
+            CometsCanvas.Visibility = useComets ? Visibility.Visible : Visibility.Collapsed;
+            FloatingLightsCanvas.Visibility = useFloatingLights ? Visibility.Visible : Visibility.Collapsed;
+            PulseCanvas.Visibility = usePulse ? Visibility.Visible : Visibility.Collapsed;
+            SparklesCanvas.Visibility = useSparkles ? Visibility.Visible : Visibility.Collapsed;
 
             if (!this.IsVisible) return;
 
@@ -521,7 +666,7 @@ namespace FastPush
 
             if (useGrid)
             {
-                var loop = new DoubleAnimation(0, 48, TimeSpan.FromSeconds(14)) { RepeatBehavior = RepeatBehavior.Forever };
+                var loop = new DoubleAnimation(0, 64, TimeSpan.FromSeconds(28)) { RepeatBehavior = RepeatBehavior.Forever };
                 GridPatternTranslate.BeginAnimation(TranslateTransform.XProperty, loop);
                 GridPatternTranslate.BeginAnimation(TranslateTransform.YProperty, loop);
             }
@@ -535,9 +680,10 @@ namespace FastPush
 
             if (useBokeh)
             {
+                double height = Math.Max(ActualHeight, Height);
                 foreach (var p in _bokehParticles)
                 {
-                    var floatUp = new DoubleAnimation(740, -60, TimeSpan.FromSeconds(p.SpeedSec))
+                    var floatUp = new DoubleAnimation(height + p.StartY * 0.2, -70, TimeSpan.FromSeconds(p.SpeedSec))
                     {
                         RepeatBehavior = RepeatBehavior.Forever
                     };
@@ -545,19 +691,61 @@ namespace FastPush
                     p.SwayX.BeginAnimation(TranslateTransform.XProperty, CreateWaveAnim(-p.SwayAmount, p.SwayAmount, p.SpeedSec * 0.45, sine));
                 }
             }
+
+            if (useComets)
+            {
+                double travelDistance = Math.Max(ActualWidth, Width) * 1.6 + 300;
+                for (int i = 0; i < _cometTransforms.Count; i++)
+                {
+                    var comet = new DoubleAnimation(0, travelDistance, TimeSpan.FromSeconds(11 + i % 3 * 3))
+                    {
+                        BeginTime = TimeSpan.FromSeconds(i * 3.8),
+                        RepeatBehavior = RepeatBehavior.Forever
+                    };
+                    _cometTransforms[i].BeginAnimation(TranslateTransform.XProperty, comet);
+                }
+            }
+
+            if (useFloatingLights)
+            {
+                foreach (var light in _floatingLights)
+                {
+                    light.X.BeginAnimation(TranslateTransform.XProperty, CreateWaveAnim(-light.XAmount, light.XAmount, light.Duration, sine));
+                    light.Y.BeginAnimation(TranslateTransform.YProperty, CreateWaveAnim(-light.YAmount, light.YAmount, light.Duration * 1.3, sine));
+                }
+            }
+
+            if (usePulse)
+            {
+                PulseGlowScale.BeginAnimation(ScaleTransform.ScaleXProperty, CreateWaveAnim(0.84, 1.04, 11, sine));
+                PulseGlowScale.BeginAnimation(ScaleTransform.ScaleYProperty, CreateWaveAnim(0.84, 1.04, 11, sine));
+                PulseGlow.BeginAnimation(UIElement.OpacityProperty, CreateWaveAnim(0.12, 0.3, 11, sine));
+            }
+
+            if (useSparkles)
+            {
+                foreach (var sparkle in _sparkles)
+                {
+                    var twinkle = CreateWaveAnim(0.06, 0.72, sparkle.Duration, sine);
+                    twinkle.BeginTime = TimeSpan.FromSeconds(sparkle.Delay);
+                    sparkle.Element.BeginAnimation(UIElement.OpacityProperty, twinkle);
+                    sparkle.Scale.BeginAnimation(ScaleTransform.ScaleXProperty, CreateWaveAnim(0.35, 1.2, sparkle.Duration, sine));
+                    sparkle.Scale.BeginAnimation(ScaleTransform.ScaleYProperty, CreateWaveAnim(0.35, 1.2, sparkle.Duration, sine));
+                }
+            }
         }
 
         private static void StartPulseRing(Ellipse ring, ScaleTransform scale, double delaySec)
         {
-            var dur = TimeSpan.FromSeconds(6);
+            var dur = TimeSpan.FromSeconds(10);
             var begin = TimeSpan.FromSeconds(delaySec);
 
-            var scaleAnim = new DoubleAnimation(0.25, 2.5, dur)
+            var scaleAnim = new DoubleAnimation(0.18, 2.7, dur)
             {
                 BeginTime = begin,
                 RepeatBehavior = RepeatBehavior.Forever
             };
-            var fadeAnim = new DoubleAnimation(0.42, 0.0, dur)
+            var fadeAnim = new DoubleAnimation(0.2, 0.0, dur)
             {
                 BeginTime = begin,
                 RepeatBehavior = RepeatBehavior.Forever
@@ -595,6 +783,26 @@ namespace FastPush
                 p.MoveY.BeginAnimation(TranslateTransform.YProperty, null);
                 p.SwayX.BeginAnimation(TranslateTransform.XProperty, null);
             }
+
+            foreach (TranslateTransform comet in _cometTransforms)
+                comet.BeginAnimation(TranslateTransform.XProperty, null);
+
+            foreach (var light in _floatingLights)
+            {
+                light.X.BeginAnimation(TranslateTransform.XProperty, null);
+                light.Y.BeginAnimation(TranslateTransform.YProperty, null);
+            }
+
+            PulseGlowScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            PulseGlowScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            PulseGlow.BeginAnimation(UIElement.OpacityProperty, null);
+
+            foreach (var sparkle in _sparkles)
+            {
+                sparkle.Element.BeginAnimation(UIElement.OpacityProperty, null);
+                sparkle.Scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+                sparkle.Scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            }
         }
 
         private static DoubleAnimation CreateWaveAnim(double from, double to, double sec, IEasingFunction ease)
@@ -614,7 +822,7 @@ namespace FastPush
             IsEditMode = enable;
             EditModeBtn.IsChecked = enable;
             EditModeBtn.Content = enable ? "✓ Готово" : "✎ Ред.";
-            SubHeaderStatusText.Text = enable ? "режим правки" : "beta 0.3";
+            SubHeaderStatusText.Text = enable ? "режим правки" : "beta 4.1";
 
             if (enable && _isDrawerOpen)
                 CloseSettingsDrawer();
@@ -1247,8 +1455,13 @@ namespace FastPush
             foreach (var rb in AccentsPanel.Children.OfType<RadioButton>())
                 rb.IsChecked = string.Equals(rb.Tag as string, _design.AccentColor, StringComparison.OrdinalIgnoreCase);
 
-            foreach (var rb in BgModesPanel.Children.OfType<RadioButton>())
-                rb.IsChecked = string.Equals(rb.Tag as string, _design.BackgroundMode, StringComparison.OrdinalIgnoreCase);
+            List<string> selectedEffects = GetBackgroundEffects();
+            foreach (ToggleButton button in BgEffectsPanel.Children.OfType<ToggleButton>())
+                button.IsChecked = button.Tag is string effect &&
+                    selectedEffects.Contains(effect, StringComparer.OrdinalIgnoreCase);
+            BgEffectsLimitText.Text = selectedEffects.Count == 2
+                ? "Выбраны 2 эффекта"
+                : "Выберите не более двух эффектов";
 
             foreach (var rb in GridPresetsPanel.Children.OfType<RadioButton>())
                 rb.IsChecked = string.Equals(rb.Tag as string, _design.GridPreset, StringComparison.OrdinalIgnoreCase);
@@ -1295,10 +1508,30 @@ namespace FastPush
             SaveConfiguration();
         }
 
-        private void BgMode_Click(object sender, RoutedEventArgs e)
+        private void BgEffect_Click(object sender, RoutedEventArgs e)
         {
-            if (_isSyncingUI || sender is not RadioButton rb || rb.Tag is not string mode) return;
-            _design.BackgroundMode = mode;
+            if (_isSyncingUI || sender is not ToggleButton changedButton) return;
+
+            ToggleButton[] selectedButtons = BgEffectsPanel.Children
+                .OfType<ToggleButton>()
+                .Where(button => button.IsChecked == true)
+                .ToArray();
+            if (selectedButtons.Length > 2)
+            {
+                changedButton.IsChecked = false;
+                BgEffectsLimitText.Text = "Можно выбрать максимум два эффекта";
+                return;
+            }
+
+            _design.BackgroundEffects = selectedButtons
+                .Where(button => button.Tag is string)
+                .Select(button => button.Tag)
+                .OfType<string>()
+                .ToList();
+            _design.BackgroundMode = "Custom";
+            BgEffectsLimitText.Text = selectedButtons.Length == 2
+                ? "Выбраны 2 эффекта"
+                : "Выберите не более двух эффектов";
             UpdateBackgroundAnimations();
             SaveConfiguration();
         }
@@ -1346,8 +1579,14 @@ namespace FastPush
 
         private void ApplyGridSettings(double size, double spacing)
         {
+            size = Math.Clamp(double.IsFinite(size) ? size : 150, 100, 180);
+            spacing = Math.Clamp(double.IsFinite(spacing) ? spacing : 14, 1, 24);
+            _design.TileSize = size;
+            _design.TileSpacing = spacing;
             TileSize = size;
             TileMargin = new Thickness(spacing);
+            TileSizeValueText.Text = $"{size:0}";
+            TileSpacingValueText.Text = $"{spacing:0}";
             TilesContainer.UpdateLayout();
             UpdateActiveGridColumnProfile();
             SaveConfiguration();
@@ -1442,7 +1681,7 @@ namespace FastPush
             }
 
             RecordHotkeyButton.Content = display;
-            TrayIcon.ToolTipText = $"Nook • Beta 0.3 ({display})";
+            TrayIcon.ToolTipText = $"Nook • Beta 4.1 ({display})";
             ManualHotkeyPanel.Visibility = Visibility.Collapsed;
             SaveConfiguration();
         }
@@ -1524,7 +1763,7 @@ namespace FastPush
 
             RegisterCurrentHotkey(showWarningOnFail: true);
             RecordHotkeyButton.Content = _design.HotkeyDisplay;
-            TrayIcon.ToolTipText = $"Nook • Beta 0.3 ({_design.HotkeyDisplay})";
+            TrayIcon.ToolTipText = $"Nook • Beta 4.1 ({_design.HotkeyDisplay})";
             SaveConfiguration();
         }
 
@@ -1595,7 +1834,7 @@ namespace FastPush
             if (RegisterCurrentHotkey(showWarningOnFail: false))
             {
                 RecordHotkeyButton.Content = _design.HotkeyDisplay;
-                TrayIcon.ToolTipText = $"Nook • Beta 0.3 ({_design.HotkeyDisplay})";
+                TrayIcon.ToolTipText = $"Nook • Beta 4.1 ({_design.HotkeyDisplay})";
                 SaveConfiguration();
             }
             else
@@ -1790,8 +2029,8 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
         {
             AppConfig config = ReadOrCreateConfig();
             _design = config.Settings ?? new DesignSettings();
-            _design.TileSize = Math.Clamp(double.IsFinite(_design.TileSize) ? _design.TileSize : 150, 90, 180);
-            _design.TileSpacing = Math.Clamp(double.IsFinite(_design.TileSpacing) ? _design.TileSpacing : 14, 0, 24);
+            _design.TileSize = Math.Clamp(double.IsFinite(_design.TileSize) ? _design.TileSize : 150, 100, 180);
+            _design.TileSpacing = Math.Clamp(double.IsFinite(_design.TileSpacing) ? _design.TileSpacing : 14, 1, 24);
             _design.TileOpacity = Math.Clamp(_design.TileOpacity, 30, 100);
             _design.GridPreset ??= "Standard";
             TileSize = _design.TileSize;
@@ -1993,6 +2232,7 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
         {
             if (_isSyncingUI) return;
 
+            UpdateBackgroundEffectLayout();
             UpdateActiveGridColumnProfile();
             _design.WindowWidth = ActualWidth;
             _design.WindowHeight = ActualHeight;

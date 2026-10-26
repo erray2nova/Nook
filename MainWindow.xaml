@@ -381,6 +381,42 @@
             </Setter>
         </Style>
 
+        <Style x:Key="ModePillToggleStyle" TargetType="ToggleButton">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Margin" Value="3"/>
+            <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}"/>
+            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="PillBd"
+                                Background="{DynamicResource InputSurfaceBrush}"
+                                BorderBrush="{DynamicResource BorderSubtleBrush}"
+                                BorderThickness="1.2"
+                                CornerRadius="10"
+                                Padding="10,8">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}"/>
+                                <Setter TargetName="PillBd" Property="Background" Value="{DynamicResource TileHoverSurfaceBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter Property="Foreground" Value="{DynamicResource AccentForegroundBrush}"/>
+                                <Setter TargetName="PillBd" Property="Background" Value="{DynamicResource AccentBrush}"/>
+                                <Setter TargetName="PillBd" Property="BorderBrush" Value="Transparent"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.55"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- Кружок акцентного цвета -->
         <Style x:Key="AccentSwatchRadioStyle" TargetType="RadioButton">
             <Setter Property="Width" Value="34"/>
@@ -544,7 +580,7 @@
     <Grid>
         <!-- Системный трей -->
         <tb:TaskbarIcon x:Name="TrayIcon"
-                        ToolTipText="Nook • Beta 0.3"
+                        ToolTipText="Nook • Beta 4.1"
                         TrayMouseDoubleClick="TrayIcon_DoubleClick">
             <tb:TaskbarIcon.ContextMenu>
                 <ContextMenu>
@@ -580,23 +616,29 @@
                     <ScaleTransform x:Name="OverlayScale" ScaleX="1" ScaleY="1"/>
                 </Grid.RenderTransform>
 
-                <!-- ФОН 1: Аврора (Плавающие градиентные пузыри) -->
+                <!-- 1. Aurora: широкие мягкие цветовые шлейфы -->
                 <Canvas x:Name="BubblesCanvas" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed">
-                    <Ellipse Width="580" Height="580" Canvas.Left="-140" Canvas.Top="-160" Fill="{DynamicResource OrbPrimaryBrush}">
+                    <Ellipse Width="900" Height="420" Canvas.Left="-280" Canvas.Top="-120" Fill="{DynamicResource OrbPrimaryBrush}" Opacity="0.82" RenderTransformOrigin="0.5,0.5">
                         <Ellipse.CacheMode><BitmapCache RenderAtScale="0.3"/></Ellipse.CacheMode>
                         <Ellipse.RenderTransform>
-                            <TranslateTransform x:Name="Orb1Translate" X="0" Y="0"/>
+                            <TransformGroup>
+                                <RotateTransform Angle="-18"/>
+                                <TranslateTransform x:Name="Orb1Translate" X="0" Y="0"/>
+                            </TransformGroup>
                         </Ellipse.RenderTransform>
                     </Ellipse>
 
-                    <Ellipse Width="640" Height="640" Canvas.Right="-170" Canvas.Bottom="-210" Fill="{DynamicResource OrbSecondaryBrush}">
+                    <Ellipse Width="820" Height="500" Canvas.Right="-330" Canvas.Bottom="-250" Fill="{DynamicResource OrbSecondaryBrush}" Opacity="0.8" RenderTransformOrigin="0.5,0.5">
                         <Ellipse.CacheMode><BitmapCache RenderAtScale="0.3"/></Ellipse.CacheMode>
                         <Ellipse.RenderTransform>
-                            <TranslateTransform x:Name="Orb2Translate" X="0" Y="0"/>
+                            <TransformGroup>
+                                <RotateTransform Angle="22"/>
+                                <TranslateTransform x:Name="Orb2Translate" X="0" Y="0"/>
+                            </TransformGroup>
                         </Ellipse.RenderTransform>
                     </Ellipse>
 
-                    <Ellipse Width="420" Height="420" Canvas.Left="430" Canvas.Top="170" Fill="{DynamicResource OrbSecondaryBrush}" Opacity="0.7" RenderTransformOrigin="0.5,0.5">
+                    <Ellipse Width="620" Height="340" Canvas.Left="390" Canvas.Top="180" Fill="{DynamicResource OrbSecondaryBrush}" Opacity="0.52" RenderTransformOrigin="0.5,0.5">
                         <Ellipse.CacheMode><BitmapCache RenderAtScale="0.3"/></Ellipse.CacheMode>
                         <Ellipse.RenderTransform>
                             <ScaleTransform x:Name="Orb3Scale" ScaleX="1" ScaleY="1"/>
@@ -604,10 +646,10 @@
                     </Ellipse>
                 </Canvas>
 
-                <!-- ФОН 2: Движущаяся сетка -->
+                <!-- 2. Grid: медленный почти невесомый параллакс -->
                 <Rectangle x:Name="GridPatternLayer" IsHitTestVisible="False" Visibility="Collapsed">
                     <Rectangle.Fill>
-                        <DrawingBrush Viewport="0,0,48,48" ViewportUnits="Absolute" TileMode="Tile">
+                        <DrawingBrush Viewport="0,0,64,64" ViewportUnits="Absolute" TileMode="Tile">
                             <DrawingBrush.Transform>
                                 <TranslateTransform x:Name="GridPatternTranslate" X="0" Y="0"/>
                             </DrawingBrush.Transform>
@@ -615,8 +657,8 @@
                                 <GeometryDrawing>
                                     <GeometryDrawing.Geometry>
                                         <GeometryGroup>
-                                            <LineGeometry StartPoint="0,0" EndPoint="48,0"/>
-                                            <LineGeometry StartPoint="0,0" EndPoint="0,48"/>
+                                            <LineGeometry StartPoint="0,0" EndPoint="64,0"/>
+                                            <LineGeometry StartPoint="0,0" EndPoint="0,64"/>
                                         </GeometryGroup>
                                     </GeometryDrawing.Geometry>
                                     <GeometryDrawing.Pen>
@@ -628,21 +670,46 @@
                     </Rectangle.Fill>
                 </Rectangle>
 
-                <!-- ФОН 3: Неоновый импульс (Расходящиеся волны) -->
+                <!-- 3. Waves: расходящиеся тонкие кольца -->
                 <Grid x:Name="WavesLayer" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed">
-                    <Ellipse x:Name="WaveRing1" Width="340" Height="340" Stroke="{DynamicResource AccentBrush}" StrokeThickness="1.8" Opacity="0" RenderTransformOrigin="0.5,0.5" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Ellipse x:Name="WaveRing1" Width="420" Height="420" Stroke="{DynamicResource AccentBrush}" StrokeThickness="1.2" Opacity="0" RenderTransformOrigin="0.5,0.5" HorizontalAlignment="Center" VerticalAlignment="Center">
                         <Ellipse.RenderTransform><ScaleTransform x:Name="Wave1Scale" ScaleX="0.3" ScaleY="0.3"/></Ellipse.RenderTransform>
                     </Ellipse>
-                    <Ellipse x:Name="WaveRing2" Width="340" Height="340" Stroke="{DynamicResource AccentBrush}" StrokeThickness="1.5" Opacity="0" RenderTransformOrigin="0.5,0.5" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Ellipse x:Name="WaveRing2" Width="420" Height="420" Stroke="{DynamicResource AccentBrush}" StrokeThickness="1" Opacity="0" RenderTransformOrigin="0.5,0.5" HorizontalAlignment="Center" VerticalAlignment="Center">
                         <Ellipse.RenderTransform><ScaleTransform x:Name="Wave2Scale" ScaleX="0.3" ScaleY="0.3"/></Ellipse.RenderTransform>
                     </Ellipse>
-                    <Ellipse x:Name="WaveRing3" Width="340" Height="340" Stroke="{DynamicResource AccentBrush}" StrokeThickness="1.2" Opacity="0" RenderTransformOrigin="0.5,0.5" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Ellipse x:Name="WaveRing3" Width="420" Height="420" Stroke="{DynamicResource AccentBrush}" StrokeThickness="0.8" Opacity="0" RenderTransformOrigin="0.5,0.5" HorizontalAlignment="Center" VerticalAlignment="Center">
                         <Ellipse.RenderTransform><ScaleTransform x:Name="Wave3Scale" ScaleX="0.3" ScaleY="0.3"/></Ellipse.RenderTransform>
                     </Ellipse>
                 </Grid>
 
-                <!-- ФОН 4: Светящиеся частицы Боке (генерируются в коде) -->
+                <!-- 4. Bokeh: крупные редкие мягкие частицы -->
                 <Canvas x:Name="BokehCanvas" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed"/>
+
+                <!-- 5-8. Метеоры, огни, цветовое дыхание и мерцающие звезды -->
+                <Canvas x:Name="CometsCanvas" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed"/>
+                <Canvas x:Name="FloatingLightsCanvas" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed"/>
+                <Grid x:Name="PulseCanvas" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed">
+                    <Ellipse x:Name="PulseGlow"
+                             Width="820"
+                             Height="820"
+                             HorizontalAlignment="Center"
+                             VerticalAlignment="Center"
+                             Opacity="0.25"
+                             RenderTransformOrigin="0.5,0.5">
+                        <Ellipse.CacheMode><BitmapCache RenderAtScale="0.3"/></Ellipse.CacheMode>
+                        <Ellipse.Fill>
+                            <RadialGradientBrush>
+                                <GradientStop Color="#66FFFFFF" Offset="0"/>
+                                <GradientStop Color="#00FFFFFF" Offset="1"/>
+                            </RadialGradientBrush>
+                        </Ellipse.Fill>
+                        <Ellipse.RenderTransform>
+                            <ScaleTransform x:Name="PulseGlowScale" ScaleX="0.78" ScaleY="0.78"/>
+                        </Ellipse.RenderTransform>
+                    </Ellipse>
+                </Grid>
+                <Canvas x:Name="SparklesCanvas" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed"/>
 
                 <!-- ОСНОВНОЙ ИНТЕРФЕЙС ЛАУНЧЕРА -->
                 <Grid Margin="32,22,32,26">
@@ -660,7 +727,7 @@
                             <ColumnDefinition Width="260"/>
                         </Grid.ColumnDefinitions>
 
-                        <!-- Слева: Логотип, Название и beta 0.3 -->
+                        <!-- Слева: Логотип, название и версия -->
                         <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                             <Border Width="38"
                                     Height="38"
@@ -682,7 +749,7 @@
                                            FontWeight="Bold"
                                            Margin="0,-2,0,0"/>
                                 <TextBlock x:Name="SubHeaderStatusText"
-                                           Text="beta 0.3"
+                                           Text="beta 4.1"
                                            Foreground="{DynamicResource SecondaryTextBrush}"
                                            FontSize="11.5"
                                            FontWeight="Medium"/>
@@ -1121,7 +1188,7 @@
                                                    FontWeight="Bold"
                                                    HorizontalAlignment="Right"/>
                                     </Grid>
-                                    <Slider x:Name="TileSizeSlider" Minimum="90" Maximum="180" TickFrequency="1"
+                                    <Slider x:Name="TileSizeSlider" Minimum="100" Maximum="180" TickFrequency="1"
                                             IsSnapToTickEnabled="True" Margin="0,0,0,8" ValueChanged="GridSlider_ValueChanged"/>
 
                                     <Grid Margin="2,0,2,2">
@@ -1134,7 +1201,7 @@
                                                    FontWeight="Bold"
                                                    HorizontalAlignment="Right"/>
                                     </Grid>
-                                    <Slider x:Name="TileSpacingSlider" Minimum="0" Maximum="24" TickFrequency="1"
+                                    <Slider x:Name="TileSpacingSlider" Minimum="1" Maximum="24" TickFrequency="1"
                                             IsSnapToTickEnabled="True" Margin="0,0,0,8" ValueChanged="GridSlider_ValueChanged"/>
 
                                     <Grid Margin="2,0,2,2">
@@ -1150,19 +1217,26 @@
                                     <Slider x:Name="TileOpacitySlider" Minimum="30" Maximum="100" TickFrequency="1"
                                             IsSnapToTickEnabled="True" Margin="0,0,0,18" ValueChanged="TileOpacitySlider_ValueChanged"/>
 
-                                    <TextBlock Text="Анимация заднего плана"
+                                    <TextBlock Text="Анимации заднего плана"
                                                Foreground="{DynamicResource PrimaryTextBrush}"
                                                FontSize="13.5"
                                                FontWeight="SemiBold"
-                                               Margin="2,0,0,6"/>
+                                               Margin="2,0,0,2"/>
+                                    <TextBlock x:Name="BgEffectsLimitText"
+                                               Text="Выберите не более двух эффектов"
+                                               Foreground="{DynamicResource SecondaryTextBrush}"
+                                               FontSize="11.5"
+                                               Margin="2,0,0,8"/>
 
-                                    <UniformGrid x:Name="BgModesPanel" Columns="3" Margin="-3,0,-3,18">
-                                        <RadioButton Content="Комбо" Tag="Combo" GroupName="BgAnimModes" Style="{StaticResource ModePillRadioStyle}" Click="BgMode_Click"/>
-                                        <RadioButton Content="Аврора" Tag="Aurora" GroupName="BgAnimModes" Style="{StaticResource ModePillRadioStyle}" Click="BgMode_Click"/>
-                                        <RadioButton Content="Сетка" Tag="Grid" GroupName="BgAnimModes" Style="{StaticResource ModePillRadioStyle}" Click="BgMode_Click"/>
-                                        <RadioButton Content="Импульс" Tag="Waves" GroupName="BgAnimModes" Style="{StaticResource ModePillRadioStyle}" Click="BgMode_Click"/>
-                                        <RadioButton Content="Частицы" Tag="Bokeh" GroupName="BgAnimModes" Style="{StaticResource ModePillRadioStyle}" Click="BgMode_Click"/>
-                                        <RadioButton Content="Статика" Tag="None" GroupName="BgAnimModes" Style="{StaticResource ModePillRadioStyle}" Click="BgMode_Click"/>
+                                    <UniformGrid x:Name="BgEffectsPanel" Columns="2" Margin="0,0,0,18">
+                                        <ToggleButton Content="Аврора" Tag="Aurora" Style="{StaticResource ModePillToggleStyle}" Click="BgEffect_Click"/>
+                                        <ToggleButton Content="Сетка" Tag="Grid" Style="{StaticResource ModePillToggleStyle}" Click="BgEffect_Click"/>
+                                        <ToggleButton Content="Волны" Tag="Waves" Style="{StaticResource ModePillToggleStyle}" Click="BgEffect_Click"/>
+                                        <ToggleButton Content="Боке" Tag="Bokeh" Style="{StaticResource ModePillToggleStyle}" Click="BgEffect_Click"/>
+                                        <ToggleButton Content="Метеоры" Tag="Comets" Style="{StaticResource ModePillToggleStyle}" Click="BgEffect_Click"/>
+                                        <ToggleButton Content="Светлячки" Tag="FloatingLights" Style="{StaticResource ModePillToggleStyle}" Click="BgEffect_Click"/>
+                                        <ToggleButton Content="Дыхание" Tag="Pulse" Style="{StaticResource ModePillToggleStyle}" Click="BgEffect_Click"/>
+                                        <ToggleButton Content="Звёзды" Tag="Sparkles" Style="{StaticResource ModePillToggleStyle}" Click="BgEffect_Click"/>
                                     </UniformGrid>
 
                                     <Grid Margin="2,0,2,6">
@@ -1328,7 +1402,7 @@
                                             </Border>
                                             <StackPanel VerticalAlignment="Center">
                                                 <TextBlock Text="Nook Launcher" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="15" FontWeight="Bold"/>
-                                                <TextBlock Text="Beta 0.3 • Данные в %LocalAppData%\Nook" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11.5" Margin="0,2,0,0"/>
+                                                <TextBlock Text="Beta 4.1 • Данные в %LocalAppData%\Nook" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11.5" Margin="0,2,0,0"/>
                                             </StackPanel>
                                         </StackPanel>
                                     </Border>
