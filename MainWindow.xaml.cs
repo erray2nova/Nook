@@ -19,6 +19,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
+using System.Windows.Resources;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using Microsoft.Win32;
@@ -148,12 +149,18 @@ namespace FastPush
         private uint _acrylicTintBgr = 0x130E0E;
         private int _activeGridColumns;
         private readonly DispatcherTimer _resizeSaveTimer = new();
+        private CancellationTokenSource? _searchCancellation;
+        private string? _activeSearchQuery;
+        private string? _searchError;
+        private bool _isSearchLoading;
+        private int _searchRequestId;
 
         // Перетаскивание плиток и вкладок
         private Point _tileDragStartPoint;
         private Point _tileDragPointerOffset;
         private Point _tileLayoutPosition;
         private TileViewModel? _potentialDraggedTile;
+        private ObservableCollection<TileViewModel>? _tileDragSourceCollection;
         private Button? _draggedTileButton;
         private bool _isTileDragging;
         private bool _isInternalDragging = false;
@@ -175,9 +182,13 @@ namespace FastPush
 
         private DesignSettings _design = new();
         private readonly Dictionary<string, ObservableCollection<TileViewModel>> _categoriesMap = new();
+        private readonly Dictionary<string, Guid> _categoryIds = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Dictionary<int, List<string>>> _categoryLayouts = new(StringComparer.OrdinalIgnoreCase);
         private readonly List<string> _categoryOrder = new();
+        private readonly List<TileViewModel> _navigationStack = new();
+        private readonly ObservableCollection<TileViewModel> _globalSearchResults = new();
         private string _activeCategory = string.Empty;
+        private bool _isGlobalSearchActive;
 
         public MainWindow()
         {
@@ -188,13 +199,15 @@ namespace FastPush
             MigrateLegacyConfigIfNeeded();
 
             InitializeComponent();
+            StartMenuSearchService.RefreshIndexInBackground();
             _resizeSaveTimer.Interval = TimeSpan.FromMilliseconds(600);
             _resizeSaveTimer.Tick += (_, _) =>
             {
                 _resizeSaveTimer.Stop();
                 SaveConfiguration();
             };
-            TrayIcon.Icon = System.Drawing.SystemIcons.Application;
+            Icon = LoadNookIcon();
+            TrayIcon.Icon = LoadNookTrayIcon();
             InitializeBokehParticles();
             InitializeAdditionalBackgroundEffects();
 
@@ -839,11 +852,17 @@ namespace FastPush
             SetEditMode(!IsEditMode);
         }
 
-        private static bool IsClickInsideTaggedButton(DependencyObject? source, DependencyObject stopAt, params string[] tags)
+        private static bool IsClickInsideTaggedButton(
+            DependencyObject? source,
+            DependencyObject stopAt,
+            string tag,
+            string? secondaryTag = null)
         {
             while (source != null && source != stopAt)
             {
-                if (source is Button b && b.Tag is string t && tags.Contains(t))
+                if (source is Button button && button.Tag is string buttonTag &&
+                    (string.Equals(buttonTag, tag, StringComparison.Ordinal) ||
+                     (secondaryTag != null && string.Equals(buttonTag, secondaryTag, StringComparison.Ordinal))))
                     return true;
                 source = VisualTreeHelper.GetParent(source);
             }
@@ -853,7 +872,7 @@ namespace FastPush
         // Живое перетаскивание плиток (iOS Drag & Drop)
         private void Tile_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
-            if (!IsEditMode || sender is not Button tileBtn || tileBtn.Tag is not TileViewModel tile)
+            if (!IsEditMode || _isGlobalSearchActive || sender is not Button tileBtn || tileBtn.Tag is not TileViewModel tile)
                 return;
 
             if (IsClickInsideTaggedButton(e.OriginalSource as DependencyObject, tileBtn, "QuickDeleteBtn"))
@@ -862,6 +881,7 @@ namespace FastPush
             _tileDragStartPoint = e.GetPosition(TilesScrollViewer);
             _tileDragPointerOffset = e.GetPosition(tileBtn);
             _potentialDraggedTile = tile;
+            _tileDragSourceCollection = GetActiveTiles();
         }
 
         private void Tile_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
@@ -871,14 +891,28 @@ namespace FastPush
                 Point dropPoint = e.GetPosition(TilesScrollViewer);
                 Point windowPoint = e.GetPosition(this);
                 TileViewModel? draggedTile = _potentialDraggedTile;
+                TileViewModel? folderTarget = FindFolderTargetAtPoint(draggedTile, dropPoint);
 
                 try
                 {
-                    UpdateTileDrag(dropPoint);
+                    if (folderTarget != null && draggedTile != null && !IsDescendantOf(draggedTile, folderTarget))
+                    {
+                        ObservableCollection<TileViewModel>? source = _tileDragSourceCollection;
+                        if (source != null && source.Remove(draggedTile))
+                        {
+                            draggedTile.ParentId = folderTarget.Id;
+                            folderTarget.Children.Add(draggedTile);
+                        }
+                    }
+                    else
+                    {
+                        UpdateTileDrag(dropPoint);
+                    }
                     tileButton.ReleaseMouseCapture();
                     ResetTileDrag(tileButton);
 
-                    MoveTileToCategoryAtPoint(draggedTile, windowPoint);
+                    if (folderTarget == null)
+                        MoveTileToCategoryAtPoint(draggedTile, windowPoint);
 
                     SaveConfiguration();
                 }
@@ -894,6 +928,7 @@ namespace FastPush
             }
 
             _potentialDraggedTile = null;
+            _tileDragSourceCollection = null;
         }
 
         private void Tile_PreviewMouseMove(object sender, MouseEventArgs e)
@@ -909,7 +944,7 @@ namespace FastPush
                 return;
             }
 
-            if (!IsEditMode || _isInternalDragging || _potentialDraggedTile == null || e.LeftButton != MouseButtonState.Pressed)
+            if (!IsEditMode || _isGlobalSearchActive || _isInternalDragging || _potentialDraggedTile == null || e.LeftButton != MouseButtonState.Pressed)
                 return;
 
             Point pos = e.GetPosition(TilesScrollViewer);
@@ -958,6 +993,7 @@ namespace FastPush
             Panel.SetZIndex(tileButton, 0);
 
             _potentialDraggedTile = null;
+            _tileDragSourceCollection = null;
             _draggedTileButton = null;
             _isTileDragging = false;
             _isInternalDragging = false;
@@ -969,7 +1005,7 @@ namespace FastPush
             if (_potentialDraggedTile == null)
                 return;
 
-            ObservableCollection<TileViewModel>? activeTiles = GetActiveTiles();
+            ObservableCollection<TileViewModel>? activeTiles = _tileDragSourceCollection;
             if (activeTiles == null) return;
 
             int oldIndex = activeTiles.IndexOf(_potentialDraggedTile);
@@ -1048,10 +1084,11 @@ namespace FastPush
                     continue;
                 }
 
-                ObservableCollection<TileViewModel>? sourceTiles = GetActiveTiles();
+                ObservableCollection<TileViewModel>? sourceTiles = _tileDragSourceCollection ?? GetActiveTiles();
                 if (sourceTiles == null ||
                     !_categoriesMap.TryGetValue(targetCategory, out ObservableCollection<TileViewModel>? targetTiles) ||
-                    targetTiles.Any(existing => string.Equals(existing.Path, tile.Path, StringComparison.OrdinalIgnoreCase)))
+                    (!tile.IsInternalFolder && targetTiles.Any(existing => !existing.IsInternalFolder &&
+                        string.Equals(existing.Path, tile.Path, StringComparison.OrdinalIgnoreCase))))
                 {
                     return true;
                 }
@@ -1060,6 +1097,7 @@ namespace FastPush
                     return true;
 
                 targetTiles.Add(tile);
+                tile.ParentId = null;
                 SelectCategory(targetCategory);
                 return true;
             }
@@ -1067,14 +1105,43 @@ namespace FastPush
             return false;
         }
 
+        private TileViewModel? FindFolderTargetAtPoint(TileViewModel? draggedTile, Point point)
+        {
+            ObservableCollection<TileViewModel>? activeTiles = _tileDragSourceCollection;
+            if (draggedTile == null || activeTiles == null) return null;
+
+            foreach (TileViewModel candidate in activeTiles)
+            {
+                if (ReferenceEquals(candidate, draggedTile) || !candidate.IsInternalFolder ||
+                    TilesContainer.ItemContainerGenerator.ContainerFromItem(candidate) is not FrameworkElement container ||
+                    TilesContainer.ItemTemplate?.FindName("TileButton", container) is not Button button)
+                    continue;
+
+                Point topLeft = button.TranslatePoint(new Point(0, 0), TilesScrollViewer);
+                Rect bounds = new(topLeft, new Size(button.ActualWidth, button.ActualHeight));
+                if (bounds.Contains(point))
+                    return candidate;
+            }
+            return null;
+        }
+
+        private static bool IsDescendantOf(TileViewModel possibleAncestor, TileViewModel tile)
+        {
+            if (ReferenceEquals(possibleAncestor, tile)) return true;
+            return tile.Children.Any(child => IsDescendantOf(possibleAncestor, child));
+        }
+
         private void QuickDeleteTileBtn_Click(object sender, RoutedEventArgs e)
         {
             e.Handled = true;
             if (sender is FrameworkElement fe && fe.DataContext is TileViewModel tile)
             {
-                var active = GetActiveTiles();
+                var active = FindTileCollection(tile);
                 if (active != null && active.Remove(tile))
+                {
+                    RefreshTileSearchIfActive();
                     SaveConfiguration();
+                }
             }
         }
 
@@ -1202,22 +1269,12 @@ namespace FastPush
                 e.Handled = true;
                 bool added = false;
                 foreach (string path in files)
-                {
-                    if (!File.Exists(path) && !Directory.Exists(path)) continue;
-                    if (targetCol.Any(t => string.Equals(t.Path, path, StringComparison.OrdinalIgnoreCase))) continue;
-
-                    targetCol.Add(new TileViewModel
-                    {
-                        Name = GetDefaultDisplayName(path),
-                        Path = path,
-                        CustomIconPath = string.Empty,
-                        IconSource = ResolveTileIcon(path, null)
-                    });
-                    added = true;
-                }
+                    added |= AddExternalTile(targetCol, path, null);
 
                 if (added)
                 {
+                    RefreshTileDisplayMetrics();
+                    RefreshTileSearchIfActive();
                     SelectCategory(targetCat);
                     SaveConfiguration();
                 }
@@ -1254,6 +1311,7 @@ namespace FastPush
                     col.CollectionChanged += (_, _) => UpdateEmptyHint();
 
                     _categoriesMap[name] = col;
+                    _categoryIds[name] = Guid.NewGuid();
                     _categoryOrder.Add(name);
 
                     BuildCategoryTabsUI();
@@ -1314,6 +1372,8 @@ namespace FastPush
                     var tiles = _categoriesMap[oldName];
                     _categoriesMap.Remove(oldName);
                     _categoriesMap[newName] = tiles;
+                    if (_categoryIds.Remove(oldName, out Guid categoryId))
+                        _categoryIds[newName] = categoryId;
 
                     int idx = _categoryOrder.IndexOf(oldName);
                     if (idx >= 0) _categoryOrder[idx] = newName;
@@ -1356,6 +1416,7 @@ namespace FastPush
             }
 
             _categoriesMap.Remove(catName);
+            _categoryIds.Remove(catName);
             _categoryOrder.Remove(catName);
 
             BuildCategoryTabsUI();
@@ -1587,6 +1648,7 @@ namespace FastPush
             TileMargin = new Thickness(spacing);
             TileSizeValueText.Text = $"{size:0}";
             TileSpacingValueText.Text = $"{spacing:0}";
+            RefreshTileDisplayMetrics();
             TilesContainer.UpdateLayout();
             UpdateActiveGridColumnProfile();
             SaveConfiguration();
@@ -2042,6 +2104,7 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             ApplyPalette();
 
             _categoriesMap.Clear();
+            _categoryIds.Clear();
             _categoryLayouts.Clear();
             _categoryOrder.Clear();
 
@@ -2059,10 +2122,13 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             if (config.Categories == null || config.Categories.Count == 0)
                 config = CreateDefaultConfig();
 
-            foreach (CategoryConfig category in config.Categories)
+            var usedTileIds = new HashSet<Guid>();
+            foreach (CategoryConfig? category in config.Categories)
             {
+                if (category == null) continue;
                 string catName = string.IsNullOrWhiteSpace(category.Name) ? "Общее" : category.Name.Trim();
                 if (_categoriesMap.ContainsKey(catName)) continue;
+                _categoryIds[catName] = category.Id == Guid.Empty ? Guid.NewGuid() : category.Id;
 
                 var collection = new ObservableCollection<TileViewModel>();
                 collection.CollectionChanged += (_, _) => UpdateEmptyHint();
@@ -2075,17 +2141,12 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
 
                 if (category.Tiles != null)
                 {
-                    foreach (TileConfig tile in category.Tiles)
+                    foreach (TileConfig? tile in category.Tiles)
                     {
-                        if (string.IsNullOrWhiteSpace(tile.Path)) continue;
-
-                        collection.Add(new TileViewModel
-                        {
-                            Name = string.IsNullOrWhiteSpace(tile.Name) ? GetDefaultDisplayName(tile.Path) : tile.Name,
-                            Path = tile.Path,
-                            CustomIconPath = tile.Icon ?? string.Empty,
-                            IconSource = ResolveTileIcon(tile.Path, tile.Icon)
-                        });
+                        if (tile == null) continue;
+                        TileViewModel? loadedTile = LoadTileConfiguration(tile, null, usedTileIds, 0);
+                        if (loadedTile != null)
+                            collection.Add(loadedTile);
                     }
                 }
 
@@ -2094,8 +2155,73 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             }
 
             BuildCategoryTabsUI();
+            _navigationStack.Clear();
             string targetTab = _categoriesMap.ContainsKey(_activeCategory) ? _activeCategory : _categoryOrder.First();
             SelectCategory(targetTab);
+            RefreshTileDisplayMetrics();
+        }
+
+        private TileViewModel? LoadTileConfiguration(TileConfig config, Guid? parentId, HashSet<Guid> usedIds, int depth)
+        {
+            config.Children ??= new List<TileConfig>();
+            string type = string.IsNullOrWhiteSpace(config.Type)
+                ? InferTileType(config.Path)
+                : config.Type;
+            if (type is not (TileTypes.Application or TileTypes.File or TileTypes.Folder or TileTypes.InternalFolder))
+                type = InferTileType(config.Path);
+            if (type != TileTypes.InternalFolder && string.IsNullOrWhiteSpace(config.Path))
+                return null;
+
+            Guid id = config.Id;
+            if (id == Guid.Empty || !usedIds.Add(id))
+            {
+                do { id = Guid.NewGuid(); }
+                while (!usedIds.Add(id));
+            }
+            string path = config.Path ?? string.Empty;
+            var tile = new TileViewModel
+            {
+                Id = id,
+                ParentId = parentId,
+                Type = type,
+                Name = string.IsNullOrWhiteSpace(config.Name)
+                    ? (type == TileTypes.InternalFolder ? "Новая папка" : GetDefaultDisplayName(path))
+                    : config.Name.Trim(),
+                Path = path,
+                CustomIconPath = config.Icon ?? string.Empty,
+                ColumnSpan = Math.Clamp(config.ColumnSpan, 1, 2),
+                ShowLabel = config.ShowLabel,
+                LabelPlacement = config.LabelPlacement is "Inside" or "Below" ? config.LabelPlacement : "Inside",
+                LabelAlignment = config.LabelAlignment is "Left" or "Center" or "Right" ? config.LabelAlignment : "Center",
+                IconSource = type == TileTypes.InternalFolder
+                    ? (string.IsNullOrWhiteSpace(config.Icon) ? LoadNookIcon() : ResolveTileIcon(path, config.Icon))
+                    : ResolveTileIcon(path, config.Icon)
+            };
+
+            foreach (TileConfig child in config.Children)
+            {
+                TileViewModel? loadedChild = LoadTileConfiguration(child, tile.Id, usedIds, depth + 1);
+                if (loadedChild != null)
+                    tile.Children.Add(loadedChild);
+            }
+            return tile;
+        }
+
+        private static string InferTileType(string? path)
+        {
+            if (!string.IsNullOrWhiteSpace(path) && Directory.Exists(path))
+                return TileTypes.Folder;
+
+            bool fileExists = !string.IsNullOrWhiteSpace(path) && File.Exists(path);
+            string extension = System.IO.Path.GetExtension(path ?? string.Empty);
+            if (extension.Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
+                extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase) ||
+                extension.Equals(".url", StringComparison.OrdinalIgnoreCase) ||
+                extension.Equals(".bat", StringComparison.OrdinalIgnoreCase) ||
+                extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase))
+                return TileTypes.Application;
+
+            return fileExists || !string.IsNullOrEmpty(extension) ? TileTypes.File : TileTypes.Folder;
         }
 
         private void SelectCategory(string categoryName)
@@ -2113,19 +2239,15 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             if (!_categoriesMap.TryGetValue(categoryName, out var tilesCollection)) return;
 
             if (!string.Equals(_activeCategory, categoryName, StringComparison.OrdinalIgnoreCase))
+            {
                 SaveActiveLayoutProfile();
+                _navigationStack.Clear();
+            }
 
             _activeCategory = categoryName;
             _activeGridColumns = GetCurrentGridColumnCount();
             ApplyLayoutProfile(categoryName, _activeGridColumns);
-            ICollectionView tilesView = CollectionViewSource.GetDefaultView(tilesCollection);
-            tilesView.Filter = item =>
-                item is TileViewModel tile &&
-                (string.IsNullOrWhiteSpace(TileSearchTextBox.Text) ||
-                 tile.Name.Contains(TileSearchTextBox.Text, StringComparison.OrdinalIgnoreCase) ||
-                 tile.Path.Contains(TileSearchTextBox.Text, StringComparison.OrdinalIgnoreCase));
-            TilesContainer.ItemsSource = tilesView;
-            UpdateEmptyHint();
+            ShowActiveTiles();
 
             if (_design.SmoothAnimations)
             {
@@ -2136,19 +2258,252 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
 
         private ObservableCollection<TileViewModel>? GetActiveTiles()
         {
+            if (_navigationStack.Count > 0)
+                return _navigationStack[^1].Children;
+
             return _categoriesMap.TryGetValue(_activeCategory, out var list) ? list : null;
+        }
+
+        private void ShowActiveTiles()
+        {
+            if (!string.IsNullOrWhiteSpace(TileSearchTextBox.Text))
+            {
+                ShowGlobalSearchResults(TileSearchTextBox.Text);
+                return;
+            }
+
+            CancelSystemSearch();
+            ClearSearchMetadata();
+            _isGlobalSearchActive = false;
+            ObservableCollection<TileViewModel>? tiles = GetActiveTiles();
+            if (tiles == null) return;
+
+            tiles.CollectionChanged -= ActiveTiles_CollectionChanged;
+            tiles.CollectionChanged += ActiveTiles_CollectionChanged;
+            ICollectionView tilesView = CollectionViewSource.GetDefaultView(tiles);
+            tilesView.Filter = null;
+            TilesContainer.ItemsSource = tilesView;
+            UpdateFolderNavigation();
+            UpdateEmptyHint();
+        }
+
+        private void ShowGlobalSearchResults(string query)
+        {
+            _isGlobalSearchActive = true;
+            TilesContainer.ItemsSource = _globalSearchResults;
+            string normalizedQuery = query.Trim();
+            if (string.Equals(_activeSearchQuery, normalizedQuery, StringComparison.Ordinal))
+            {
+                UpdateEmptyHint();
+                return;
+            }
+
+            CancelSystemSearch();
+            _activeSearchQuery = normalizedQuery;
+            _searchError = null;
+            _isSearchLoading = true;
+            _globalSearchResults.Clear();
+            UpdateFolderNavigation();
+            UpdateEmptyHint();
+
+            _searchCancellation = new CancellationTokenSource();
+            int requestId = ++_searchRequestId;
+            _ = SearchWindowsAsync(normalizedQuery, requestId, _searchCancellation.Token);
+        }
+
+        private async Task SearchWindowsAsync(string query, int requestId, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await Task.Delay(300, cancellationToken);
+                IReadOnlyList<WindowsSearchEntry> indexedResults =
+                    await WindowsIndexedSearchService.SearchAsync(query, cancellationToken);
+
+                if (cancellationToken.IsCancellationRequested || requestId != _searchRequestId)
+                    return;
+
+                string swappedQuery = StartMenuSearchService.SwapKeyboardLayout(query);
+                var results = new Dictionary<string, (WindowsSearchEntry Entry, int Score)>(
+                    StringComparer.OrdinalIgnoreCase);
+
+                foreach (WindowsSearchEntry entry in indexedResults)
+                {
+                    int score = StartMenuSearchService.ScoreMatch(
+                        query, swappedQuery, entry.Name, entry.Path);
+                    if (score > 0)
+                        results[entry.Path] = (entry, score);
+                }
+
+                foreach (StartMenuAppEntry app in StartMenuSearchService.CachedApps)
+                {
+                    int score = StartMenuSearchService.ScoreMatch(
+                        query, swappedQuery, app.Name, app.ShortcutPath);
+                    if (score > 0 && !results.ContainsKey(app.ShortcutPath))
+                    {
+                        results[app.ShortcutPath] = (
+                            new WindowsSearchEntry(app.Name, app.ShortcutPath, "application"),
+                            score);
+                    }
+                }
+
+                _globalSearchResults.Clear();
+                foreach ((WindowsSearchEntry entry, int _) in results.Values
+                    .OrderByDescending(result => result.Score)
+                    .ThenBy(result => result.Entry.Name, StringComparer.CurrentCultureIgnoreCase)
+                    .Take(60))
+                {
+                    bool isFolder = entry.Kind.Contains("folder", StringComparison.OrdinalIgnoreCase) ||
+                        Directory.Exists(entry.Path);
+                    _globalSearchResults.Add(new TileViewModel
+                    {
+                        Name = entry.Name,
+                        Path = entry.Path,
+                        Type = isFolder ? TileTypes.Folder : InferTileType(entry.Path),
+                        IsSearchResult = true,
+                        SearchLocation = string.IsNullOrWhiteSpace(entry.DisplayPath)
+                            ? "Этот компьютер"
+                            : entry.DisplayPath,
+                        IconSource = ResolveTileIcon(entry.Path, null)
+                    });
+                }
+
+                _searchError = null;
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                if (cancellationToken.IsCancellationRequested || requestId != _searchRequestId)
+                    return;
+
+                _searchError = ex.Message;
+                _globalSearchResults.Clear();
+            }
+            finally
+            {
+                if (!cancellationToken.IsCancellationRequested && requestId == _searchRequestId)
+                {
+                    _isSearchLoading = false;
+                    _searchCancellation?.Dispose();
+                    _searchCancellation = null;
+                    UpdateEmptyHint();
+                }
+            }
+        }
+
+        private void ClearSearchMetadata()
+        {
+            foreach (TileViewModel tile in _globalSearchResults)
+            {
+                tile.SearchLocation = string.Empty;
+                tile.IsSearchResult = false;
+            }
+            _globalSearchResults.Clear();
+        }
+
+        private void CancelSystemSearch()
+        {
+            _searchRequestId++;
+            _searchCancellation?.Cancel();
+            _searchCancellation?.Dispose();
+            _searchCancellation = null;
+            _activeSearchQuery = null;
+            _isSearchLoading = false;
+            _searchError = null;
+        }
+
+        private void ActiveTiles_CollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+        {
+            UpdateEmptyHint();
+        }
+
+        private void UpdateFolderNavigation()
+        {
+            bool nested = _navigationStack.Count > 0;
+            FolderNavigationBar.Visibility = nested && !_isGlobalSearchActive ? Visibility.Visible : Visibility.Collapsed;
+            FolderBreadcrumbText.Text = nested
+                ? string.Join("  /  ", new[] { _activeCategory }.Concat(_navigationStack.Select(folder => folder.Name)))
+                : string.Empty;
+        }
+
+        private void NavigateBack_Click(object sender, RoutedEventArgs e)
+        {
+            if (_navigationStack.Count == 0) return;
+            _navigationStack.RemoveAt(_navigationStack.Count - 1);
+            ShowActiveTiles();
+        }
+
+        private void NavigateIntoFolder(TileViewModel folder)
+        {
+            if (!folder.IsInternalFolder) return;
+            _navigationStack.Add(folder);
+            ShowActiveTiles();
+        }
+
+        private void NavigateToSearchFolder(TileViewModel target)
+        {
+            foreach ((string categoryName, ObservableCollection<TileViewModel> roots) in _categoriesMap)
+            {
+                var folderPath = new List<TileViewModel>();
+                if (!TryGetFolderPath(roots, target, folderPath))
+                    continue;
+
+                TileSearchTextBox.Clear();
+                SelectCategory(categoryName);
+                _navigationStack.Clear();
+                _navigationStack.AddRange(folderPath);
+                ShowActiveTiles();
+                return;
+            }
         }
 
         private void TileSearch_TextChanged(object sender, TextChangedEventArgs e)
         {
-            if (TilesContainer.ItemsSource is ICollectionView tilesView)
-                tilesView.Refresh();
+            if (TilesContainer == null || TileSearchTextBox == null) return;
+            ShowActiveTiles();
         }
 
         private void UpdateEmptyHint()
         {
-            var current = GetActiveTiles();
-            EmptyStatePanel.Visibility = (current == null || current.Count == 0) ? Visibility.Visible : Visibility.Collapsed;
+            bool empty = _isGlobalSearchActive
+                ? _globalSearchResults.Count == 0
+                : GetActiveTiles() is not { Count: > 0 };
+            EmptyStatePanel.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
+            if (_isGlobalSearchActive)
+            {
+                EmptyStateTitle.Text = _isSearchLoading
+                    ? "Поиск на компьютере…"
+                    : _searchError != null
+                        ? "Поиск Windows недоступен"
+                        : "Ничего не найдено";
+                EmptyStateDescription.Text = _isSearchLoading
+                    ? "Ищем среди файлов и приложений, доступных через индекс Windows Search."
+                    : _searchError
+                        ?? "Проверьте раскладку клавиатуры или попробуйте другой запрос. Поиск охватывает расположения, индексируемые Windows Search.";
+            }
+            else
+            {
+                EmptyStateTitle.Text = "В этой папке пока пусто";
+                EmptyStateDescription.Text = "Добавьте плитки кнопкой ниже или перетащите файлы из Проводника.";
+            }
+        }
+
+        private void RefreshTileDisplayMetrics()
+        {
+            double spacing = _design.TileSpacing;
+            void UpdateTree(IEnumerable<TileViewModel> tiles)
+            {
+                foreach (TileViewModel tile in tiles)
+                {
+                    tile.DisplayWidth = tile.ColumnSpan == 2 ? TileSize * 2 + spacing * 2 : TileSize;
+                    UpdateTree(tile.Children);
+                }
+            }
+
+            foreach (ObservableCollection<TileViewModel> category in _categoriesMap.Values)
+                UpdateTree(category);
         }
 
         private int GetCurrentGridColumnCount()
@@ -2163,14 +2518,14 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
 
         private void SaveActiveLayoutProfile()
         {
-            if (_isApplyingLayoutProfile || _activeGridColumns <= 0 ||
+            if (_navigationStack.Count > 0 || _isApplyingLayoutProfile || _activeGridColumns <= 0 ||
                 !_categoryLayouts.TryGetValue(_activeCategory, out Dictionary<int, List<string>>? profiles) ||
                 GetActiveTiles() is not ObservableCollection<TileViewModel> tiles)
             {
                 return;
             }
 
-            profiles[_activeGridColumns] = tiles.Select(tile => tile.Path).ToList();
+            profiles[_activeGridColumns] = tiles.Select(tile => tile.Id.ToString("D")).ToList();
         }
 
         private void ApplyLayoutProfile(string categoryName, int columns)
@@ -2190,10 +2545,14 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             var desiredOrder = new List<TileViewModel>(tiles.Count);
             foreach (string path in paths)
             {
-                if (seenPaths.Add(path) && byPath.TryGetValue(path, out TileViewModel? tile))
+                TileViewModel? tile = Guid.TryParse(path, out Guid tileId)
+                    ? tiles.FirstOrDefault(candidate => candidate.Id == tileId)
+                    : byPath.TryGetValue(path, out TileViewModel? legacyTile) ? legacyTile : null;
+                string uniqueKey = tile?.Id.ToString("D") ?? path;
+                if (tile != null && seenPaths.Add(uniqueKey))
                     desiredOrder.Add(tile);
             }
-            desiredOrder.AddRange(tiles.Where(tile => seenPaths.Add(tile.Path)));
+            desiredOrder.AddRange(tiles.Where(tile => seenPaths.Add(tile.Id.ToString("D"))));
 
             _isApplyingLayoutProfile = true;
             try
@@ -2215,6 +2574,15 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
         private void UpdateActiveGridColumnProfile()
         {
             if (_isSyncingUI || string.IsNullOrEmpty(_activeCategory)) return;
+
+            if (_navigationStack.Count > 0)
+            {
+                _design.WindowWidth = ActualWidth;
+                _design.WindowHeight = ActualHeight;
+                _resizeSaveTimer.Stop();
+                _resizeSaveTimer.Start();
+                return;
+            }
 
             int columns = GetCurrentGridColumnCount();
             if (columns == _activeGridColumns) return;
@@ -2265,13 +2633,9 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
                 Settings = _design,
                 Categories = _categoryOrder.Select(categoryName => new CategoryConfig
                 {
+                    Id = _categoryIds.TryGetValue(categoryName, out Guid categoryId) ? categoryId : Guid.NewGuid(),
                     Name = categoryName,
-                    Tiles = _categoriesMap[categoryName].Select(tile => new TileConfig
-                    {
-                        Name = tile.Name,
-                        Path = tile.Path,
-                        Icon = tile.CustomIconPath
-                    }).ToList(),
+                    Tiles = _categoriesMap[categoryName].Select(tile => CreateTileConfig(tile, null)).ToList(),
                     ColumnLayouts = _categoryLayouts.TryGetValue(categoryName, out Dictionary<int, List<string>>? layouts)
                         ? layouts.ToDictionary(profile => profile.Key, profile => profile.Value.ToList())
                         : new Dictionary<int, List<string>>()
@@ -2279,9 +2643,28 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             };
         }
 
+        private static TileConfig CreateTileConfig(TileViewModel tile, Guid? parentId)
+        {
+            return new TileConfig
+            {
+                Id = tile.Id,
+                ParentId = parentId,
+                Type = tile.Type,
+                Name = tile.Name,
+                Path = tile.Path,
+                Icon = tile.CustomIconPath,
+                ColumnSpan = tile.ColumnSpan,
+                ShowLabel = tile.ShowLabel,
+                LabelPlacement = tile.LabelPlacement,
+                LabelAlignment = tile.LabelAlignment,
+                Children = tile.Children.Select(child => CreateTileConfig(child, tile.Id)).ToList()
+            };
+        }
+
         private static JsonSerializerOptions CreateWriteOptions() => new()
         {
             WriteIndented = true,
+            MaxDepth = 512,
             Encoder = JavaScriptEncoder.Create(UnicodeRanges.BasicLatin, UnicodeRanges.Cyrillic)
         };
 
@@ -2289,7 +2672,8 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
         {
             PropertyNameCaseInsensitive = true,
             ReadCommentHandling = JsonCommentHandling.Skip,
-            AllowTrailingCommas = true
+            AllowTrailingCommas = true,
+            MaxDepth = 512
         };
 
         private AppConfig ReadOrCreateConfig()
@@ -2424,56 +2808,179 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             return defaultIcon;
         }
 
+        private static ImageSource LoadNookIcon()
+        {
+            Uri resourceUri = new("pack://application:,,,/Assets/Nook.ico", UriKind.Absolute);
+            StreamResourceInfo resource = Application.GetResourceStream(resourceUri)
+                ?? throw new InvalidOperationException("Не удалось найти встроенную иконку Assets\\Nook.ico.");
+            using (resource.Stream)
+            {
+                BitmapDecoder decoder = BitmapDecoder.Create(
+                    resource.Stream,
+                    BitmapCreateOptions.PreservePixelFormat,
+                    BitmapCacheOption.OnLoad);
+                BitmapSource icon = decoder.Frames.OrderByDescending(frame => frame.PixelWidth).First();
+                icon.Freeze();
+                return icon;
+            }
+        }
+
+        private static System.Drawing.Icon LoadNookTrayIcon()
+        {
+            Uri resourceUri = new("pack://application:,,,/Assets/Nook.ico", UriKind.Absolute);
+            StreamResourceInfo resource = Application.GetResourceStream(resourceUri)
+                ?? throw new InvalidOperationException("Не удалось найти встроенную иконку Assets\\Nook.ico.");
+            using (resource.Stream)
+                return new System.Drawing.Icon(resource.Stream);
+        }
+
         // --- РУЧНОЕ ДОБАВЛЕНИЕ, DRAG & DROP ИЗ ПРОВОДНИКА И УПРАВЛЕНИЕ ПЛИТКАМИ ---
 
         private void AddTileManual_Click(object sender, RoutedEventArgs e)
         {
-            var activeTiles = GetActiveTiles();
+            ContextMenu? sourceMenu = GetMenuItemContextMenu(sender);
+            if (sourceMenu != null)
+                sourceMenu.IsOpen = false;
+
+            string? selection = null;
+            var picker = new Window
+            {
+                Title = "Добавить плитку",
+                Owner = this,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Width = 360,
+                SizeToContent = SizeToContent.Height,
+                ResizeMode = ResizeMode.NoResize,
+                WindowStyle = WindowStyle.ToolWindow,
+                ShowInTaskbar = false,
+                Background = (Brush)FindResource("DrawerSurfaceBrush"),
+                Foreground = (Brush)FindResource("PrimaryTextBrush")
+            };
+            var choices = new StackPanel { Margin = new Thickness(24) };
+            choices.Children.Add(new TextBlock
+            {
+                Text = "Что добавить?",
+                FontSize = 18,
+                FontWeight = FontWeights.SemiBold,
+                Margin = new Thickness(0, 0, 0, 14)
+            });
+            AddChoice("Приложение или ярлык", "application");
+            AddChoice("Файл", "file");
+            AddChoice("Папку Windows", "folder");
+            AddChoice("Внутреннюю папку Nook", "internal");
+            picker.Content = choices;
+            bool wasSuppressingHide = _suppressDeactivateHide;
+            _suppressDeactivateHide = true;
+            bool? accepted;
+            try
+            {
+                accepted = picker.ShowDialog();
+            }
+            finally
+            {
+                _suppressDeactivateHide = wasSuppressingHide;
+            }
+            if (accepted != true) return;
+
+            switch (selection)
+            {
+                case "application":
+                    AddApplications_Click(this, new RoutedEventArgs());
+                    break;
+                case "file":
+                    AddFiles_Click(this, new RoutedEventArgs());
+                    break;
+                case "folder":
+                    AddFolderManual_Click(this, new RoutedEventArgs());
+                    break;
+                case "internal":
+                    CreateInternalFolder_Click(this, new RoutedEventArgs());
+                    break;
+            }
+
+            void AddChoice(string label, string value)
+            {
+                var choice = new Button
+                {
+                    Content = label,
+                    Style = (Style)FindResource("PrimaryActionButtonStyle"),
+                    Margin = new Thickness(0, 0, 0, 8),
+                    HorizontalContentAlignment = HorizontalAlignment.Left,
+                    Padding = new Thickness(14, 10, 14, 10)
+                };
+                choice.Click += (_, _) =>
+                {
+                    selection = value;
+                    picker.DialogResult = true;
+                };
+                choices.Children.Add(choice);
+            }
+        }
+
+        private void AddApplications_Click(object sender, RoutedEventArgs e)
+        {
+            AddExternalItems(new OpenFileDialog
+            {
+                Title = "Выберите приложение или ярлык",
+                Filter = "Программы и ярлыки (*.exe;*.lnk;*.url;*.bat;*.cmd)|*.exe;*.lnk;*.url;*.bat;*.cmd|Все файлы (*.*)|*.*",
+                DereferenceLinks = false,
+                Multiselect = true
+            });
+        }
+
+        private void AddFiles_Click(object sender, RoutedEventArgs e)
+        {
+            AddExternalItems(new OpenFileDialog
+            {
+                Title = "Выберите файлы",
+                Filter = "Все файлы (*.*)|*.*",
+                DereferenceLinks = false,
+                Multiselect = true
+            });
+        }
+
+        private void AddExternalItems(OpenFileDialog dialog)
+        {
+            ObservableCollection<TileViewModel>? activeTiles = GetActiveTiles();
             if (activeTiles == null) return;
 
             _suppressDeactivateHide = true;
             try
             {
-                var dlg = new OpenFileDialog
-                {
-                    Title = "Выберите программы или ярлыки",
-                    Filter = "Программы и ярлыки (*.exe;*.lnk;*.url;*.bat;*.cmd)|*.exe;*.lnk;*.url;*.bat;*.cmd|Все файлы (*.*)|*.*",
-                    DereferenceLinks = false,
-                    Multiselect = true
-                };
-
-                if (dlg.ShowDialog(this) == true)
-                {
-                    bool added = false;
-                    foreach (string path in dlg.FileNames)
-                    {
-                        if (!File.Exists(path) && !Directory.Exists(path)) continue;
-                        if (activeTiles.Any(t => string.Equals(t.Path, path, StringComparison.OrdinalIgnoreCase))) continue;
-
-                        activeTiles.Add(new TileViewModel
-                        {
-                            Name = GetDefaultDisplayName(path),
-                            Path = path,
-                            CustomIconPath = string.Empty,
-                            IconSource = ResolveTileIcon(path, null)
-                        });
-                        added = true;
-                    }
-
-                    if (added)
-                    {
-                        SaveConfiguration();
-                        UpdateEmptyHint();
-                        if (_isDrawerOpen) CloseSettingsDrawer();
-                    }
-                }
+                if (dialog.ShowDialog(this) != true) return;
+                foreach (string path in dialog.FileNames)
+                    AddExternalTile(activeTiles, path, GetCurrentParentId());
+                RefreshTileDisplayMetrics();
+                RefreshTileSearchIfActive();
+                SaveConfiguration();
+                UpdateEmptyHint();
             }
             finally
             {
                 _suppressDeactivateHide = false;
-                this.Activate();
-                this.Focus();
+                Activate();
+                Focus();
             }
+        }
+
+        private Guid? GetCurrentParentId() => _navigationStack.Count > 0 ? _navigationStack[^1].Id : null;
+
+        private bool AddExternalTile(ObservableCollection<TileViewModel> target, string path, Guid? parentId)
+        {
+            if (!File.Exists(path) && !Directory.Exists(path)) return false;
+            if (target.Any(tile => !tile.IsInternalFolder &&
+                string.Equals(tile.Path, path, StringComparison.OrdinalIgnoreCase))) return false;
+
+            target.Add(new TileViewModel
+            {
+                ParentId = parentId,
+                Type = Directory.Exists(path) ? TileTypes.Folder : InferTileType(path),
+                Name = GetDefaultDisplayName(path),
+                Path = path,
+                CustomIconPath = string.Empty,
+                IconSource = ResolveTileIcon(path, null)
+            });
+            return true;
         }
 
         private void AddFolderManual_Click(object sender, RoutedEventArgs e)
@@ -2496,20 +3003,13 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
                     foreach (string folder in dlg.FolderNames)
                     {
                         if (!Directory.Exists(folder)) continue;
-                        if (activeTiles.Any(t => string.Equals(t.Path, folder, StringComparison.OrdinalIgnoreCase))) continue;
-
-                        activeTiles.Add(new TileViewModel
-                        {
-                            Name = GetDefaultDisplayName(folder),
-                            Path = folder,
-                            CustomIconPath = string.Empty,
-                            IconSource = ResolveTileIcon(folder, null)
-                        });
-                        added = true;
+                        added |= AddExternalTile(activeTiles, folder, GetCurrentParentId());
                     }
 
                     if (added)
                     {
+                        RefreshTileDisplayMetrics();
+                        RefreshTileSearchIfActive();
                         SaveConfiguration();
                         UpdateEmptyHint();
                         if (_isDrawerOpen) CloseSettingsDrawer();
@@ -2563,20 +3063,13 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
                 foreach (string path in droppedPaths)
                 {
                     if (!File.Exists(path) && !Directory.Exists(path)) continue;
-                    if (activeTiles.Any(t => string.Equals(t.Path, path, StringComparison.OrdinalIgnoreCase))) continue;
-
-                    activeTiles.Add(new TileViewModel
-                    {
-                        Name = GetDefaultDisplayName(path),
-                        Path = path,
-                        CustomIconPath = string.Empty,
-                        IconSource = ResolveTileIcon(path, null)
-                    });
-                    addedAny = true;
+                    addedAny |= AddExternalTile(activeTiles, path, GetCurrentParentId());
                 }
 
                 if (addedAny)
                 {
+                    RefreshTileDisplayMetrics();
+                    RefreshTileSearchIfActive();
                     SaveConfiguration();
                     UpdateEmptyHint();
                 }
@@ -2585,14 +3078,254 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
 
         private TileViewModel? GetTileFromMenuItem(object sender)
         {
-            if (sender is MenuItem menuItem &&
-                menuItem.Parent is ContextMenu contextMenu &&
-                contextMenu.PlacementTarget is Button button &&
-                button.Tag is TileViewModel tile)
+            ContextMenu? contextMenu = GetMenuItemContextMenu(sender);
+            return contextMenu?.PlacementTarget is Button button && button.Tag is TileViewModel tile
+                ? tile
+                : null;
+        }
+
+        private static ContextMenu? GetMenuItemContextMenu(object sender)
+        {
+            if (sender is not MenuItem menuItem) return null;
+            ItemsControl? owner = menuItem.Parent as ItemsControl;
+            while (owner is MenuItem parentMenuItem)
+                owner = parentMenuItem.Parent as ItemsControl;
+            return owner as ContextMenu;
+        }
+
+        private void MoveTile_Click(object sender, RoutedEventArgs e)
+        {
+            TileViewModel? tile = GetTileFromMenuItem(sender);
+            if (tile == null) return;
+            GetMenuItemContextMenu(sender)?.SetCurrentValue(ContextMenu.IsOpenProperty, false);
+            var destinations = new List<(string Label, string Category, ObservableCollection<TileViewModel> Tiles, TileViewModel? Parent)>();
+            foreach (string categoryName in _categoryOrder)
             {
-                return tile;
+                if (!_categoriesMap.TryGetValue(categoryName, out ObservableCollection<TileViewModel>? roots))
+                    continue;
+
+                destinations.Add(($"{categoryName} (корень)", categoryName, roots, null));
+                AddMoveDestinations(destinations, categoryName, roots, categoryName);
+            }
+
+            var dialog = new Window
+            {
+                Title = "Переместить плитку",
+                Owner = this,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Width = 420,
+                SizeToContent = SizeToContent.Height,
+                ResizeMode = ResizeMode.NoResize,
+                WindowStyle = WindowStyle.ToolWindow,
+                ShowInTaskbar = false,
+                Background = (Brush)FindResource("DrawerSurfaceBrush"),
+                Foreground = (Brush)FindResource("PrimaryTextBrush")
+            };
+            var panel = new StackPanel { Margin = new Thickness(22) };
+            panel.Children.Add(new TextBlock
+            {
+                Text = $"Выберите место для «{tile.Name}»",
+                FontSize = 16,
+                FontWeight = FontWeights.SemiBold,
+                Margin = new Thickness(0, 0, 0, 12)
+            });
+            var destinationPicker = new ComboBox
+            {
+                ItemsSource = destinations.Select(destination => destination.Label).ToList(),
+                SelectedIndex = 0,
+                Margin = new Thickness(0, 0, 0, 14),
+                Padding = new Thickness(8)
+            };
+            panel.Children.Add(destinationPicker);
+            var moveButton = new Button
+            {
+                Content = "Переместить",
+                Style = (Style)FindResource("PrimaryActionButtonStyle"),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Padding = new Thickness(14, 8, 14, 8)
+            };
+            moveButton.Click += (_, _) =>
+            {
+                if (destinationPicker.SelectedIndex < 0) return;
+                var destination = destinations[destinationPicker.SelectedIndex];
+                MoveTileToDestination(tile, destination.Category, destination.Tiles, destination.Parent);
+                dialog.DialogResult = true;
+            };
+            panel.Children.Add(moveButton);
+            dialog.Content = panel;
+
+            bool wasSuppressingHide = _suppressDeactivateHide;
+            _suppressDeactivateHide = true;
+            try
+            {
+                dialog.ShowDialog();
+            }
+            finally
+            {
+                _suppressDeactivateHide = wasSuppressingHide;
+            }
+        }
+
+        private static void AddMoveDestinations(
+            List<(string Label, string Category, ObservableCollection<TileViewModel> Tiles, TileViewModel? Parent)> destinations,
+            string categoryName,
+            ObservableCollection<TileViewModel> tiles,
+            string parentPath)
+        {
+            foreach (TileViewModel folder in tiles.Where(tile => tile.IsInternalFolder))
+            {
+                string folderPath = $"{parentPath}  ›  {folder.Name}";
+                destinations.Add((folderPath, categoryName, folder.Children, folder));
+                AddMoveDestinations(destinations, categoryName, folder.Children, folderPath);
+            }
+        }
+
+        private void MoveTileToDestination(
+            TileViewModel tile,
+            string categoryName,
+            ObservableCollection<TileViewModel> destination,
+            TileViewModel? parentFolder)
+        {
+            ObservableCollection<TileViewModel>? source = FindTileCollection(tile);
+            if (source == null) return;
+            if (ReferenceEquals(source, destination)) return;
+            if (parentFolder != null && IsDescendantOf(tile, parentFolder))
+            {
+                MessageBox.Show("Нельзя переместить папку внутрь самой себя или её дочерней папки.",
+                    "Nook", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            if (!tile.IsInternalFolder && destination.Any(existing => !ReferenceEquals(existing, tile) &&
+                !existing.IsInternalFolder &&
+                string.Equals(existing.Path, tile.Path, StringComparison.OrdinalIgnoreCase)))
+            {
+                MessageBox.Show("В выбранном месте уже есть плитка с этим путём.", "Nook",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            source.Remove(tile);
+            destination.Add(tile);
+            tile.ParentId = parentFolder?.Id;
+
+            if (!string.Equals(_activeCategory, categoryName, StringComparison.OrdinalIgnoreCase))
+                SelectCategory(categoryName);
+            _navigationStack.Clear();
+            if (parentFolder != null &&
+                _categoriesMap.TryGetValue(categoryName, out ObservableCollection<TileViewModel>? roots))
+            {
+                var folderPath = new List<TileViewModel>();
+                if (TryGetFolderPath(roots, parentFolder, folderPath))
+                    _navigationStack.AddRange(folderPath);
+            }
+
+            ShowActiveTiles();
+            SaveConfiguration();
+        }
+
+        private ObservableCollection<TileViewModel>? FindTileCollection(TileViewModel target)
+        {
+            foreach (ObservableCollection<TileViewModel> roots in _categoriesMap.Values)
+            {
+                ObservableCollection<TileViewModel>? found = FindTileCollection(roots, target);
+                if (found != null) return found;
             }
             return null;
+        }
+
+        private static ObservableCollection<TileViewModel>? FindTileCollection(
+            ObservableCollection<TileViewModel> collection,
+            TileViewModel target)
+        {
+            if (collection.Contains(target)) return collection;
+            foreach (TileViewModel tile in collection)
+            {
+                ObservableCollection<TileViewModel>? found = FindTileCollection(tile.Children, target);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
+        private static bool TryGetFolderPath(
+            IEnumerable<TileViewModel> current,
+            TileViewModel target,
+            List<TileViewModel> path)
+        {
+            foreach (TileViewModel tile in current)
+            {
+                if (!tile.IsInternalFolder) continue;
+                path.Add(tile);
+                if (ReferenceEquals(tile, target) || TryGetFolderPath(tile.Children, target, path))
+                    return true;
+                path.RemoveAt(path.Count - 1);
+            }
+            return false;
+        }
+
+        private void CreateInternalFolder_Click(object sender, RoutedEventArgs e)
+        {
+            TileViewModel? selectedFolder = GetTileFromMenuItem(sender);
+            ObservableCollection<TileViewModel>? target = selectedFolder?.IsInternalFolder == true
+                ? selectedFolder.Children
+                : GetActiveTiles();
+            if (target == null) return;
+
+            var folder = new TileViewModel
+            {
+                Type = TileTypes.InternalFolder,
+                Name = "Новая папка",
+                Path = string.Empty,
+                ParentId = selectedFolder?.IsInternalFolder == true
+                    ? selectedFolder.Id
+                    : _navigationStack.Count > 0 ? _navigationStack[^1].Id : null,
+                IconSource = LoadNookIcon()
+            };
+            target.Add(folder);
+            if (selectedFolder?.IsInternalFolder == true)
+            {
+                if (_isGlobalSearchActive)
+                    NavigateToSearchFolder(selectedFolder);
+                else
+                    NavigateIntoFolder(selectedFolder);
+            }
+            RefreshTileDisplayMetrics();
+            PromptRenameTile(folder);
+            SaveConfiguration();
+        }
+
+        private void DuplicateTile_Click(object sender, RoutedEventArgs e)
+        {
+            TileViewModel? source = GetTileFromMenuItem(sender);
+            ObservableCollection<TileViewModel>? target = source == null ? null : FindTileCollection(source);
+            if (source == null || target == null) return;
+
+            TileViewModel duplicate = CloneTile(source, source.ParentId);
+            duplicate.Name = $"{source.Name} — копия";
+            target.Insert(target.IndexOf(source) + 1, duplicate);
+            RefreshTileDisplayMetrics();
+            RefreshTileSearchIfActive();
+            SaveConfiguration();
+        }
+
+        private TileViewModel CloneTile(TileViewModel source, Guid? parentId)
+        {
+            var clone = new TileViewModel
+            {
+                ParentId = parentId,
+                Type = source.Type,
+                Name = source.Name,
+                Path = source.Path,
+                CustomIconPath = source.CustomIconPath,
+                IconSource = source.IsInternalFolder && string.IsNullOrWhiteSpace(source.CustomIconPath)
+                    ? LoadNookIcon()
+                    : ResolveTileIcon(source.Path, source.CustomIconPath),
+                ColumnSpan = source.ColumnSpan,
+                ShowLabel = source.ShowLabel,
+                LabelPlacement = source.LabelPlacement,
+                LabelAlignment = source.LabelAlignment
+            };
+            foreach (TileViewModel child in source.Children)
+                clone.Children.Add(CloneTile(child, clone.Id));
+            return clone;
         }
 
         private void RenameTile_Click(object sender, RoutedEventArgs e)
@@ -2605,6 +3338,12 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
         {
             TileViewModel? tile = GetTileFromMenuItem(sender);
             if (tile == null) return;
+
+            if (tile.IsInternalFolder)
+            {
+                PromptRenameTile(tile);
+                return;
+            }
 
             _suppressDeactivateHide = true;
             try
@@ -2623,7 +3362,9 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
                 {
                     tile.Name = dlg.NewName;
                     tile.Path = dlg.NewPath;
+                    tile.Type = Directory.Exists(tile.Path) ? TileTypes.Folder : InferTileType(tile.Path);
                     tile.IconSource = ResolveTileIcon(tile.Path, tile.CustomIconPath);
+                    RefreshTileSearchIfActive();
                     SaveConfiguration();
                 }
             }
@@ -2643,6 +3384,7 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
                 if (dlg.ShowDialog() == true)
                 {
                     tile.Name = dlg.NewName;
+                    RefreshTileSearchIfActive();
                     SaveConfiguration();
                 }
             }
@@ -2687,8 +3429,14 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             if (tile == null) return;
 
             tile.CustomIconPath = string.Empty;
-            tile.IconSource = ResolveTileIcon(tile.Path, null);
+            tile.IconSource = tile.IsInternalFolder ? LoadNookIcon() : ResolveTileIcon(tile.Path, null);
             SaveConfiguration();
+        }
+
+        private void RefreshTileSearchIfActive()
+        {
+            if (_isGlobalSearchActive && !string.IsNullOrWhiteSpace(TileSearchTextBox.Text))
+                ShowGlobalSearchResults(TileSearchTextBox.Text);
         }
 
         private void OpenFileLocation_Click(object sender, RoutedEventArgs e)
@@ -2748,13 +3496,95 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             TileViewModel? tile = GetTileFromMenuItem(sender);
             if (tile == null) return;
 
-            string category = _categoriesMap.FirstOrDefault(pair => pair.Value.Contains(tile)).Key ?? "—";
-            string status = GetTileAvailabilityDescription(tile.Path);
+            string category = FindOwningCategory(tile) ?? "—";
+            string status = tile.IsInternalFolder ? "Внутренняя страница Nook." : GetTileAvailabilityDescription(tile.Path);
             MessageBox.Show(
-                $"Название: {tile.Name}\nКатегория: {category}\nПуть: {tile.Path}\nДоступность: {status}\nИконка: {(string.IsNullOrWhiteSpace(tile.CustomIconPath) ? "по умолчанию" : tile.CustomIconPath)}",
+                $"Название: {tile.Name}\nТип: {tile.Type}\nКатегория: {category}\nПуть: {tile.Path}\nДоступность: {status}\nИконка: {(string.IsNullOrWhiteSpace(tile.CustomIconPath) ? "по умолчанию" : tile.CustomIconPath)}",
                 "Свойства плитки",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
+        }
+
+        private void OpenWindowsProperties_Click(object sender, RoutedEventArgs e)
+        {
+            TileViewModel? tile = GetTileFromMenuItem(sender);
+            if (tile == null || tile.IsInternalFolder)
+            {
+                if (tile != null)
+                    TileProperties_Click(sender, e);
+                return;
+            }
+
+            if (!File.Exists(tile.Path) && !Directory.Exists(tile.Path))
+            {
+                CheckTileAvailability(tile);
+                return;
+            }
+
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = tile.Path,
+                    Verb = "properties",
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or ArgumentException)
+            {
+                MessageBox.Show($"Не удалось открыть свойства файла Windows:\n{ex.Message}", "Nook",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void RunAsAdministrator_Click(object sender, RoutedEventArgs e)
+        {
+            TileViewModel? tile = GetTileFromMenuItem(sender);
+            if (tile == null)
+                return;
+
+            if (tile.Type != TileTypes.Application || !File.Exists(tile.Path))
+            {
+                MessageBox.Show(
+                    "Запуск от имени администратора доступен для приложений и ярлыков приложений.",
+                    "Nook",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            _suppressDeactivateHide = true;
+            try
+            {
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = tile.Path,
+                    Verb = "runas",
+                    UseShellExecute = true
+                };
+
+                string? workingDirectory = System.IO.Path.GetDirectoryName(tile.Path);
+                if (!string.IsNullOrWhiteSpace(workingDirectory) && Directory.Exists(workingDirectory))
+                    startInfo.WorkingDirectory = workingDirectory;
+
+                Process.Start(startInfo);
+            }
+            catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
+            {
+                // The user cancelled the UAC prompt.
+            }
+            catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or ArgumentException)
+            {
+                MessageBox.Show(
+                    $"Не удалось запустить приложение от имени администратора:\n{ex.Message}",
+                    "Nook",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+            }
+            finally
+            {
+                _suppressDeactivateHide = false;
+            }
         }
 
         private void CheckTileAvailability_Click(object sender, RoutedEventArgs e)
@@ -2766,7 +3596,7 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
 
         private void CheckTileAvailability(TileViewModel tile)
         {
-            string status = GetTileAvailabilityDescription(tile.Path);
+            string status = tile.IsInternalFolder ? "Внутренняя папка Nook доступна." : GetTileAvailabilityDescription(tile.Path);
             MessageBox.Show(
                 $"Плитка «{tile.Name}»:\n{tile.Path}\n\n{status}",
                 "Проверка доступности",
@@ -2787,6 +3617,26 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             }
 
             return "Путь не найден.";
+        }
+
+        private string? FindOwningCategory(TileViewModel target)
+        {
+            foreach ((string name, ObservableCollection<TileViewModel> tiles) in _categoriesMap)
+            {
+                if (ContainsTile(tiles, target))
+                    return name;
+            }
+            return null;
+        }
+
+        private static bool ContainsTile(IEnumerable<TileViewModel> tiles, TileViewModel target)
+        {
+            foreach (TileViewModel tile in tiles)
+            {
+                if (ReferenceEquals(tile, target) || ContainsTile(tile.Children, target))
+                    return true;
+            }
+            return false;
         }
 
         private void ExportConfiguration_Click(object sender, RoutedEventArgs e)
@@ -2943,8 +3793,23 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
                         return false;
                     }
 
+                    foreach (TileConfig tile in category.Tiles ?? new List<TileConfig>())
+                    {
+                        if (!ValidateTile(tile, 0, out error))
+                            return false;
+                    }
+
                     if (category.ColumnLayouts == null)
                         category.ColumnLayouts = new Dictionary<int, List<string>>();
+                }
+            }
+
+            if (config.Categories == null || config.Categories.Count == 0)
+            {
+                foreach (TileConfig tile in config.Tiles ?? new List<TileConfig>())
+                {
+                    if (!ValidateTile(tile, 0, out error))
+                        return false;
                 }
             }
 
@@ -2952,13 +3817,54 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             return true;
         }
 
+        private static bool ValidateTile(TileConfig? tile, int depth, out string error)
+        {
+            if (tile == null)
+            {
+                error = "Обнаружена пустая плитка.";
+                return false;
+            }
+            if (depth > 512)
+            {
+                error = "Вложенность внутренних папок превышает допустимый предел (512).";
+                return false;
+            }
+
+            tile.Children ??= new List<TileConfig>();
+            if (tile.Type is not ("" or TileTypes.Application or TileTypes.File or TileTypes.Folder or TileTypes.InternalFolder))
+            {
+                error = $"Плитка «{tile.Name}» имеет неизвестный тип «{tile.Type}».";
+                return false;
+            }
+            if (!string.Equals(tile.Type, TileTypes.InternalFolder, StringComparison.Ordinal) &&
+                string.IsNullOrWhiteSpace(tile.Path))
+            {
+                error = $"У плитки «{tile.Name}» не указан путь.";
+                return false;
+            }
+            if (!string.Equals(tile.Type, TileTypes.InternalFolder, StringComparison.Ordinal) && tile.Children.Count > 0)
+            {
+                error = $"Вложенные плитки разрешены только у внутренних папок («{tile.Name}»).";
+                return false;
+            }
+
+            foreach (TileConfig child in tile.Children)
+            {
+                if (!ValidateTile(child, depth + 1, out error))
+                    return false;
+            }
+            error = string.Empty;
+            return true;
+        }
+
         private void DeleteTile_Click(object sender, RoutedEventArgs e)
         {
             TileViewModel? tile = GetTileFromMenuItem(sender);
-            var activeTiles = GetActiveTiles();
+            ObservableCollection<TileViewModel>? activeTiles = tile == null ? null : FindTileCollection(tile);
             if (tile == null || activeTiles == null) return;
 
             activeTiles.Remove(tile);
+            RefreshTileSearchIfActive();
             SaveConfiguration();
         }
 
@@ -2967,11 +3873,44 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             if (sender is not Button clickedButton || clickedButton.Tag is not TileViewModel tile)
                 return;
 
+            if (tile.IsInternalFolder)
+            {
+                if (_isGlobalSearchActive)
+                    NavigateToSearchFolder(tile);
+                else
+                    NavigateIntoFolder(tile);
+                return;
+            }
+
+            if (tile.IsBackNavigation)
+            {
+                NavigateBack_Click(sender, e);
+                return;
+            }
+
             // В режиме правки клик по плитке не запускает игру случайно, а открывает переименование
             if (IsEditMode)
             {
-                if (!_isInternalDragging)
+                if (!_isInternalDragging && !tile.IsSearchResult)
                     PromptRenameTile(tile);
+                if (!tile.IsSearchResult)
+                    return;
+            }
+
+            if (LaunchItem(tile.Path) && _design.HideAfterLaunch)
+                AnimateAndHide();
+        }
+
+        private void OpenTile_Click(object sender, RoutedEventArgs e)
+        {
+            TileViewModel? tile = GetTileFromMenuItem(sender);
+            if (tile == null) return;
+            if (tile.IsInternalFolder)
+            {
+                if (_isGlobalSearchActive)
+                    NavigateToSearchFolder(tile);
+                else
+                    NavigateIntoFolder(tile);
                 return;
             }
 
@@ -3083,7 +4022,8 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
 
             if (e.Key == Key.Escape)
             {
-                if (IsEditMode) SetEditMode(false);
+                if (!_isDrawerOpen && _navigationStack.Count > 0) NavigateBack_Click(this, new RoutedEventArgs());
+                else if (IsEditMode) SetEditMode(false);
                 else if (_isDrawerOpen) CloseSettingsDrawer();
                 else AnimateAndHide();
                 return;
@@ -3105,6 +4045,51 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
         {
             if (!this.IsVisible) ToggleOverlay();
             OpenSettingsDrawer();
+        }
+
+        private void QuickAction_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button { Tag: string action })
+                return;
+
+            ProcessStartInfo startInfo = action switch
+            {
+                "TaskManager" => new ProcessStartInfo
+                {
+                    FileName = "taskmgr.exe",
+                    UseShellExecute = true
+                },
+                "RecycleBin" => new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    UseShellExecute = true,
+                    ArgumentList = { "shell:RecycleBinFolder" }
+                },
+                "Explorer" => new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    UseShellExecute = true
+                },
+                "WindowsSettings" => new ProcessStartInfo
+                {
+                    FileName = "ms-settings:",
+                    UseShellExecute = true
+                },
+                _ => throw new InvalidOperationException($"Неизвестное быстрое действие: {action}")
+            };
+
+            try
+            {
+                Process.Start(startInfo);
+            }
+            catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or ArgumentException)
+            {
+                MessageBox.Show(
+                    $"Не удалось выполнить действие:\n{ex.Message}",
+                    "Nook",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+            }
         }
 
         private void MenuReload_Click(object sender, RoutedEventArgs e)

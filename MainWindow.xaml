@@ -309,6 +309,38 @@
             </Setter>
         </Style>
 
+        <Style x:Key="QuickActionButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="44"/>
+            <Setter Property="Height" Value="42"/>
+            <Setter Property="Margin" Value="4,0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource HeaderSurfaceBrush}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="ActionBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{DynamicResource BorderSubtleBrush}"
+                                BorderThickness="1"
+                                CornerRadius="12">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ActionBorder" Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
+                                <Setter TargetName="ActionBorder" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ActionBorder" Property="Opacity" Value="0.78"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- Карточка выбора темы и режима анимации -->
         <Style x:Key="ThemeCardRadioStyle" TargetType="RadioButton">
             <Setter Property="Cursor" Value="Hand"/>
@@ -455,7 +487,6 @@
         <Style x:Key="TileButtonStyle" TargetType="Button">
             <Setter Property="Width" Value="{Binding TileSize, RelativeSource={RelativeSource AncestorType=Window}}"/>
             <Setter Property="Height" Value="{Binding TileSize, RelativeSource={RelativeSource AncestorType=Window}}"/>
-            <Setter Property="Margin" Value="{Binding TileMargin, RelativeSource={RelativeSource AncestorType=Window}}"/>
             <Setter Property="Background" Value="{DynamicResource TileSurfaceBrush}"/>
             <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}"/>
             <Setter Property="Cursor" Value="Hand"/>
@@ -852,8 +883,29 @@
                             </ContextMenu>
                         </Grid.ContextMenu>
 
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <DockPanel x:Name="FolderNavigationBar"
+                                   Grid.Row="0"
+                                   LastChildFill="True"
+                                   Margin="12,5,12,0"
+                                   Visibility="Collapsed">
+                            <Button Content="‹ Назад"
+                                    Style="{StaticResource CapsuleMiniButtonStyle}"
+                                    Margin="0,0,10,0"
+                                    Click="NavigateBack_Click"/>
+                            <TextBlock x:Name="FolderBreadcrumbText"
+                                       Foreground="{DynamicResource SecondaryTextBrush}"
+                                       VerticalAlignment="Center"
+                                       FontSize="13"
+                                       TextTrimming="CharacterEllipsis"/>
+                        </DockPanel>
+
                         <!-- Сетка плиток -->
                         <ScrollViewer x:Name="TilesScrollViewer"
+                                      Grid.Row="1"
                                       VerticalScrollBarVisibility="Auto"
                                       HorizontalScrollBarVisibility="Disabled">
                             <ItemsControl x:Name="TilesContainer" HorizontalAlignment="Stretch" VerticalAlignment="Center">
@@ -865,10 +917,14 @@
 
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
+                                        <StackPanel Width="{Binding DisplayWidth}"
+                                                    Margin="{Binding TileMargin, RelativeSource={RelativeSource AncestorType=Window}}">
                                         <Button x:Name="TileButton"
                                                 Style="{StaticResource TileButtonStyle}"
+                                                Width="{Binding DisplayWidth}"
+                                                Height="{Binding TileSize, RelativeSource={RelativeSource AncestorType=Window}}"
                                                 Tag="{Binding}"
-                                                ToolTip="{Binding Path}"
+                                                ToolTip="{Binding Name}"
                                                 Click="Tile_Click"
                                                 PreviewMouseLeftButtonDown="Tile_PreviewMouseLeftButtonDown"
                                                 PreviewMouseMove="Tile_PreviewMouseMove"
@@ -877,10 +933,43 @@
 
                                             <Button.ContextMenu>
                                                 <ContextMenu>
-                                                    <MenuItem Header="Изменить название / исправить путь..." Click="EditTile_Click"/>
-                                                    <MenuItem Header="Переименовать" Click="RenameTile_Click"/>
-                                                    <MenuItem Header="Сменить иконку..." Click="ChangeTileIcon_Click"/>
-                                                    <MenuItem Header="Сведения о плитке..." Click="TileProperties_Click"/>
+                                                    <ContextMenu.Resources>
+                                                        <Style x:Key="NookOnlyMenuItemStyle" TargetType="{x:Type MenuItem}">
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding PlacementTarget.Tag.IsSearchResult, RelativeSource={RelativeSource AncestorType={x:Type ContextMenu}}}" Value="True">
+                                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                        <Style x:Key="NookOnlySeparatorStyle" TargetType="{x:Type Separator}">
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding PlacementTarget.Tag.IsSearchResult, RelativeSource={RelativeSource AncestorType={x:Type ContextMenu}}}" Value="True">
+                                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                        <Style x:Key="ApplicationOnlyMenuItemStyle" TargetType="{x:Type MenuItem}">
+                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding PlacementTarget.Tag.Type, RelativeSource={RelativeSource AncestorType={x:Type ContextMenu}}}" Value="Application">
+                                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </ContextMenu.Resources>
+                                                    <MenuItem Header="Открыть" Click="OpenTile_Click"/>
+                                                    <MenuItem Header="Запустить от имени администратора"
+                                                              Style="{StaticResource ApplicationOnlyMenuItemStyle}"
+                                                              Click="RunAsAdministrator_Click"/>
+                                                    <Separator/>
+                                                    <MenuItem Header="Изменить название / исправить путь..." Style="{StaticResource NookOnlyMenuItemStyle}" Click="EditTile_Click"/>
+                                                    <MenuItem Header="Переименовать" Style="{StaticResource NookOnlyMenuItemStyle}" Click="RenameTile_Click"/>
+                                                    <MenuItem Header="Дублировать плитку" Style="{StaticResource NookOnlyMenuItemStyle}" Click="DuplicateTile_Click"/>
+                                                    <MenuItem Header="Переместить в..." Style="{StaticResource NookOnlyMenuItemStyle}" Click="MoveTile_Click"/>
+                                                    <MenuItem Header="Сменить иконку..." Style="{StaticResource NookOnlyMenuItemStyle}" Click="ChangeTileIcon_Click"/>
+                                                    <MenuItem Header="Восстановить стандартную иконку" Style="{StaticResource NookOnlyMenuItemStyle}" Click="ResetTileIcon_Click"/>
+                                                    <MenuItem Header="Сведения о плитке..." Style="{StaticResource NookOnlyMenuItemStyle}" Click="TileProperties_Click"/>
+                                                    <MenuItem Header="Свойства файла в Windows..." Click="OpenWindowsProperties_Click"/>
                                                     <MenuItem Header="Проверить доступность" Click="CheckTileAvailability_Click"/>
                                                     <Separator/>
                                                     <MenuItem Header="Путь:"
@@ -890,8 +979,10 @@
                                                     <Separator/>
                                                     <MenuItem Header="Открыть расположение файла" Click="OpenFileLocation_Click"/>
                                                     <MenuItem Header="Скопировать путь" Click="CopyTilePath_Click"/>
-                                                    <Separator/>
-                                                    <MenuItem Header="Удалить плитку" Click="DeleteTile_Click"/>
+                                                    <Separator Style="{StaticResource NookOnlySeparatorStyle}"/>
+                                                    <MenuItem Header="Создать вложенную папку" Style="{StaticResource NookOnlyMenuItemStyle}" Click="CreateInternalFolder_Click"/>
+                                                    <Separator Style="{StaticResource NookOnlySeparatorStyle}"/>
+                                                    <MenuItem Header="Удалить плитку" Style="{StaticResource NookOnlyMenuItemStyle}" Click="DeleteTile_Click"/>
                                                 </ContextMenu>
                                             </Button.ContextMenu>
 
@@ -905,8 +996,18 @@
                                                         Panel.ZIndex="3"
                                                         Cursor="Hand"
                                                         ToolTip="Удалить плитку"
-                                                        Visibility="{Binding IsEditMode, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}"
                                                         Click="QuickDeleteTileBtn_Click">
+                                                    <Button.Style>
+                                                        <Style TargetType="{x:Type Button}">
+                                                            <Setter Property="Visibility"
+                                                                    Value="{Binding IsEditMode, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsSearchResult}" Value="True">
+                                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Button.Style>
                                                     <Button.Template>
                                                         <ControlTemplate TargetType="Button">
                                                             <Border x:Name="DelCircle" Background="#DDDC2626" CornerRadius="11">
@@ -928,8 +1029,18 @@
                                                         Background="{DynamicResource AccentSoftBrush}"
                                                         HorizontalAlignment="Right"
                                                         VerticalAlignment="Top"
-                                                        IsHitTestVisible="False"
-                                                        Visibility="{Binding IsEditMode, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}">
+                                                        IsHitTestVisible="False">
+                                                    <Border.Style>
+                                                        <Style TargetType="{x:Type Border}">
+                                                            <Setter Property="Visibility"
+                                                                    Value="{Binding IsEditMode, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsSearchResult}" Value="True">
+                                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
                                                     <TextBlock Text="✎" FontSize="11" Foreground="{DynamicResource AccentBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                                 </Border>
 
@@ -946,10 +1057,67 @@
                                                                FontWeight="SemiBold"
                                                                TextAlignment="Center"
                                                                TextTrimming="CharacterEllipsis"
-                                                               MaxWidth="112"/>
+                                                           MaxWidth="{Binding DisplayWidth}">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                                <Setter Property="TextAlignment" Value="Center"/>
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding ShowLabel}" Value="False">
+                                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding LabelPlacement}" Value="Below">
+                                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding LabelAlignment}" Value="Left">
+                                                                        <Setter Property="TextAlignment" Value="Left"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding LabelAlignment}" Value="Right">
+                                                                        <Setter Property="TextAlignment" Value="Right"/>
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
                                                 </StackPanel>
                                             </Grid>
                                         </Button>
+                                            <TextBlock Text="{Binding Name}"
+                                                       Foreground="{DynamicResource PrimaryTextBrush}"
+                                                       FontSize="12"
+                                                       FontWeight="SemiBold"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       TextWrapping="NoWrap">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                        <Setter Property="TextAlignment" Value="Center"/>
+                                                        <Style.Triggers>
+                                                            <MultiDataTrigger>
+                                                                <MultiDataTrigger.Conditions>
+                                                                    <Condition Binding="{Binding ShowLabel}" Value="True"/>
+                                                                    <Condition Binding="{Binding LabelPlacement}" Value="Below"/>
+                                                                </MultiDataTrigger.Conditions>
+                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                            </MultiDataTrigger>
+                                                            <DataTrigger Binding="{Binding LabelAlignment}" Value="Left">
+                                                                <Setter Property="TextAlignment" Value="Left"/>
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding LabelAlignment}" Value="Right">
+                                                                <Setter Property="TextAlignment" Value="Right"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                                <TextBlock Text="{Binding SearchLocation}"
+                                                           Foreground="{DynamicResource SecondaryTextBrush}"
+                                                           FontSize="10.5"
+                                                           TextAlignment="Center"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           Margin="3,3,3,0"
+                                                           Visibility="{Binding IsSearchResult, Converter={StaticResource BoolToVis}}"/>
+                                        </StackPanel>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
@@ -957,6 +1125,7 @@
 
                         <!-- Приглашение добавить плитки (ПОВЕРХ ScrollViewer по ZIndex, поэтому кнопка работает безотказно) -->
                         <Border x:Name="EmptyStatePanel"
+                                Grid.Row="1"
                                 Panel.ZIndex="5"
                                 Background="{DynamicResource CardSurfaceBrush}"
                                 BorderBrush="{DynamicResource BorderSubtleBrush}"
@@ -984,14 +1153,16 @@
                                                Margin="0,-3,0,0"/>
                                 </Border>
 
-                                <TextBlock Text="В этой категории пока пусто"
+                                <TextBlock x:Name="EmptyStateTitle"
+                                           Text="В этой категории пока пусто"
                                            Foreground="{DynamicResource PrimaryTextBrush}"
                                            FontSize="17"
                                            FontWeight="Bold"
                                            TextAlignment="Center"
                                            Margin="0,0,0,8"/>
 
-                                <TextBlock Text="Добавьте программы, папки или ссылки кнопкой ниже, либо включите «✎ Ред.» и перетащите ярлыки прямо в окно."
+                                <TextBlock x:Name="EmptyStateDescription"
+                                           Text="Добавьте программы, папки или ссылки кнопкой ниже, либо включите «✎ Ред.» и перетащите ярлыки прямо в окно."
                                            Foreground="{DynamicResource SecondaryTextBrush}"
                                            FontSize="13"
                                            TextWrapping="Wrap"
@@ -1006,32 +1177,100 @@
                         </Border>
                     </Grid>
 
-                    <Border Grid.Row="2"
-                            Width="360"
-                            HorizontalAlignment="Center"
-                            Background="{DynamicResource HeaderSurfaceBrush}"
-                            BorderBrush="{DynamicResource BorderSubtleBrush}"
-                            BorderThickness="1"
-                            CornerRadius="12"
-                            Padding="12,5"
-                            Margin="0,10,0,0">
-                        <DockPanel LastChildFill="True">
-                            <TextBlock Text="⌕"
-                                       Foreground="{DynamicResource SecondaryTextBrush}"
-                                       FontSize="20"
-                                       VerticalAlignment="Center"
-                                       Margin="0,0,9,2"/>
-                            <TextBox x:Name="TileSearchTextBox"
-                                     Background="Transparent"
-                                     BorderThickness="0"
-                                     Foreground="{DynamicResource PrimaryTextBrush}"
-                                     CaretBrush="{DynamicResource AccentBrush}"
-                                     FontSize="13"
-                                     VerticalContentAlignment="Center"
-                                     ToolTip="Поиск плиток в выбранной категории"
-                                     TextChanged="TileSearch_TextChanged"/>
-                        </DockPanel>
-                    </Border>
+                    <Grid Grid.Row="2" Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="360"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0"
+                                    Orientation="Horizontal"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Center"
+                                    Margin="0,0,14,0">
+                            <Button Style="{StaticResource QuickActionButtonStyle}"
+                                    ToolTip="Открыть диспетчер задач"
+                                    AutomationProperties.Name="Диспетчер задач"
+                                    Click="QuickAction_Click"
+                                    Tag="TaskManager">
+                                <TextBlock Text="▤" FontSize="19" FontWeight="SemiBold"/>
+                            </Button>
+                            <Button Style="{StaticResource QuickActionButtonStyle}"
+                                    ToolTip="Открыть корзину"
+                                    AutomationProperties.Name="Корзина"
+                                    Click="QuickAction_Click"
+                                    Tag="RecycleBin">
+                                <TextBlock Text="♲" FontSize="22" FontFamily="Segoe UI Symbol"/>
+                            </Button>
+                        </StackPanel>
+
+                        <Border Grid.Column="1"
+                                Background="{DynamicResource HeaderSurfaceBrush}"
+                                BorderBrush="{DynamicResource BorderSubtleBrush}"
+                                BorderThickness="1"
+                                CornerRadius="12"
+                                Padding="12,5"
+                                VerticalAlignment="Center">
+                            <Grid>
+                                <TextBox x:Name="TileSearchTextBox"
+                                         Background="Transparent"
+                                         BorderThickness="0"
+                                         Foreground="{DynamicResource PrimaryTextBrush}"
+                                         CaretBrush="{DynamicResource AccentBrush}"
+                                         FontSize="13"
+                                         TextAlignment="Center"
+                                         VerticalContentAlignment="Center"
+                                         ToolTip="Поиск файлов и приложений на компьютере через индекс Windows Search"
+                                         TextChanged="TileSearch_TextChanged"/>
+                                <TextBlock Text="⌕"
+                                           HorizontalAlignment="Left"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource SecondaryTextBrush}"
+                                           FontSize="20"
+                                           Margin="0,0,0,2"
+                                           IsHitTestVisible="False"/>
+                                <TextBlock Text="Глобальный поиск"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource SecondaryTextBrush}"
+                                           FontSize="13"
+                                           IsHitTestVisible="False">
+                                    <TextBlock.Style>
+                                        <Style TargetType="{x:Type TextBlock}">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Text, ElementName=TileSearchTextBox}" Value="">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+                        </Border>
+
+                        <StackPanel Grid.Column="2"
+                                    Orientation="Horizontal"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Center"
+                                    Margin="14,0,0,0">
+                            <Button Style="{StaticResource QuickActionButtonStyle}"
+                                    ToolTip="Открыть Проводник"
+                                    AutomationProperties.Name="Проводник"
+                                    Click="QuickAction_Click"
+                                    Tag="Explorer">
+                                <TextBlock Text="▱" FontSize="21" FontWeight="SemiBold"/>
+                            </Button>
+                            <Button Style="{StaticResource QuickActionButtonStyle}"
+                                    ToolTip="Открыть параметры Windows"
+                                    AutomationProperties.Name="Параметры Windows"
+                                    Click="QuickAction_Click"
+                                    Tag="WindowsSettings">
+                                <TextBlock Text="⚙" FontSize="20" FontFamily="Segoe UI Symbol"/>
+                            </Button>
+                        </StackPanel>
+                    </Grid>
                 </Grid>
 
                 <!-- ЗАТЕМНЕНИЕ ПОД ПАНЕЛЬЮ НАСТРОЕК -->
