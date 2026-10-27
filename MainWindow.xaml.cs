@@ -187,6 +187,9 @@ namespace FastPush
         private readonly List<string> _categoryOrder = new();
         private readonly List<TileViewModel> _navigationStack = new();
         private readonly ObservableCollection<TileViewModel> _globalSearchResults = new();
+        private List<LayoutProfileConfig> _layoutProfiles = new();
+        private Guid? _activeLayoutProfileId;
+        private bool _isUpdatingLayoutProfiles;
         private string _activeCategory = string.Empty;
         private bool _isGlobalSearchActive;
 
@@ -403,7 +406,7 @@ namespace FastPush
             Application.Current.Resources["OrbSecondaryBrush"] = orb2;
 
             HeaderClockPanel.Visibility = _design.ShowClock ? Visibility.Visible : Visibility.Collapsed;
-            TrayIcon.ToolTipText = $"Nook • v1.0 ({_design.HotkeyDisplay})";
+            TrayIcon.ToolTipText = $"Nook • v1.1 ({_design.HotkeyDisplay})";
 
             UpdateAcrylicBlur();
         }
@@ -835,7 +838,7 @@ namespace FastPush
             IsEditMode = enable;
             EditModeBtn.IsChecked = enable;
             EditModeBtn.Content = enable ? "✓ Готово" : "✎ Ред.";
-            SubHeaderStatusText.Text = enable ? "режим правки" : "v1.0";
+            SubHeaderStatusText.Text = enable ? "режим правки" : "v1.1";
 
             if (enable && _isDrawerOpen)
                 CloseSettingsDrawer();
@@ -1743,7 +1746,7 @@ namespace FastPush
             }
 
             RecordHotkeyButton.Content = display;
-            TrayIcon.ToolTipText = $"Nook • v1.0 ({display})";
+            TrayIcon.ToolTipText = $"Nook • v1.1 ({display})";
             ManualHotkeyPanel.Visibility = Visibility.Collapsed;
             SaveConfiguration();
         }
@@ -1825,7 +1828,7 @@ namespace FastPush
 
             RegisterCurrentHotkey(showWarningOnFail: true);
             RecordHotkeyButton.Content = _design.HotkeyDisplay;
-            TrayIcon.ToolTipText = $"Nook • v1.0 ({_design.HotkeyDisplay})";
+            TrayIcon.ToolTipText = $"Nook • v1.1 ({_design.HotkeyDisplay})";
             SaveConfiguration();
         }
 
@@ -1896,7 +1899,7 @@ namespace FastPush
             if (RegisterCurrentHotkey(showWarningOnFail: false))
             {
                 RecordHotkeyButton.Content = _design.HotkeyDisplay;
-                TrayIcon.ToolTipText = $"Nook • v1.0 ({_design.HotkeyDisplay})";
+                TrayIcon.ToolTipText = $"Nook • v1.1 ({_design.HotkeyDisplay})";
                 SaveConfiguration();
             }
             else
@@ -2090,7 +2093,47 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
         private void LoadConfiguration()
         {
             AppConfig config = ReadOrCreateConfig();
-            _design = config.Settings ?? new DesignSettings();
+            config.Settings ??= new DesignSettings();
+            config.LayoutProfiles ??= new List<LayoutProfileConfig>();
+
+            if ((config.Categories == null || config.Categories.Count == 0) && config.Tiles != null && config.Tiles.Count > 0)
+            {
+                config.Categories = new List<CategoryConfig>
+                {
+                    new CategoryConfig { Name = "Игры", Tiles = new List<TileConfig>() },
+                    new CategoryConfig { Name = "Работа", Tiles = config.Tiles },
+                    new CategoryConfig { Name = "Папки", Tiles = new List<TileConfig>() }
+                };
+                config.Tiles = null;
+            }
+
+            if (config.Categories == null || config.Categories.Count == 0)
+                config.Categories = CreateDefaultConfig().Categories;
+
+            _layoutProfiles = config.LayoutProfiles
+                .Where(profile => profile != null && profile.Id != Guid.Empty && !string.IsNullOrWhiteSpace(profile.Name))
+                .ToList();
+            if (_layoutProfiles.Count == 0)
+            {
+                _layoutProfiles.Add(new LayoutProfileConfig
+                {
+                    Name = "По умолчанию",
+                    Categories = CloneCategories(config.Categories),
+                    VisualSettings = CreateLayoutVisualSettings(config.Settings)
+                });
+            }
+
+            LayoutProfileConfig? activeProfile = _layoutProfiles.FirstOrDefault(profile =>
+                profile.Id == config.ActiveLayoutProfileId);
+            activeProfile ??= _layoutProfiles[0];
+            _activeLayoutProfileId = activeProfile.Id;
+            if (activeProfile.Categories is { Count: > 0 })
+                config.Categories = activeProfile.Categories;
+            else
+                activeProfile.Categories = CloneCategories(config.Categories);
+
+            config.Settings = ApplyLayoutVisualSettings(activeProfile.VisualSettings, config.Settings);
+            _design = config.Settings;
             _design.TileSize = Math.Clamp(double.IsFinite(_design.TileSize) ? _design.TileSize : 150, 100, 180);
             _design.TileSpacing = Math.Clamp(double.IsFinite(_design.TileSpacing) ? _design.TileSpacing : 14, 1, 24);
             _design.TileOpacity = Math.Clamp(_design.TileOpacity, 30, 100);
@@ -2107,20 +2150,6 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             _categoryIds.Clear();
             _categoryLayouts.Clear();
             _categoryOrder.Clear();
-
-            if ((config.Categories == null || config.Categories.Count == 0) && config.Tiles != null && config.Tiles.Count > 0)
-            {
-                config.Categories = new List<CategoryConfig>
-                {
-                    new CategoryConfig { Name = "Игры", Tiles = new List<TileConfig>() },
-                    new CategoryConfig { Name = "Работа", Tiles = config.Tiles },
-                    new CategoryConfig { Name = "Папки", Tiles = new List<TileConfig>() }
-                };
-                config.Tiles = null;
-            }
-
-            if (config.Categories == null || config.Categories.Count == 0)
-                config = CreateDefaultConfig();
 
             var usedTileIds = new HashSet<Guid>();
             foreach (CategoryConfig? category in config.Categories)
@@ -2155,10 +2184,81 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             }
 
             BuildCategoryTabsUI();
+            RefreshLayoutProfilesUI();
             _navigationStack.Clear();
             string targetTab = _categoriesMap.ContainsKey(_activeCategory) ? _activeCategory : _categoryOrder.First();
             SelectCategory(targetTab);
             RefreshTileDisplayMetrics();
+        }
+
+        private static LayoutVisualSettings CreateLayoutVisualSettings(DesignSettings settings)
+        {
+            return new LayoutVisualSettings
+            {
+                Theme = settings.Theme,
+                AccentColor = settings.AccentColor,
+                BlurOpacity = settings.BlurOpacity,
+                TileSize = settings.TileSize,
+                TileSpacing = settings.TileSpacing,
+                TileOpacity = settings.TileOpacity,
+                GridPreset = settings.GridPreset,
+                WindowWidth = settings.WindowWidth,
+                WindowHeight = settings.WindowHeight,
+                BackgroundEffects = settings.BackgroundEffects?.ToList() ?? new List<string>(),
+                ShowClock = settings.ShowClock,
+                SmoothAnimations = settings.SmoothAnimations
+            };
+        }
+
+        private static DesignSettings ApplyLayoutVisualSettings(LayoutVisualSettings? visual, DesignSettings settings)
+        {
+            if (visual == null)
+                return settings;
+
+            settings.Theme = visual.Theme;
+            settings.AccentColor = visual.AccentColor;
+            settings.BlurOpacity = visual.BlurOpacity;
+            settings.TileSize = visual.TileSize;
+            settings.TileSpacing = visual.TileSpacing;
+            settings.TileOpacity = visual.TileOpacity;
+            settings.GridPreset = visual.GridPreset;
+            settings.WindowWidth = visual.WindowWidth;
+            settings.WindowHeight = visual.WindowHeight;
+            settings.BackgroundEffects = visual.BackgroundEffects?.ToList() ?? new List<string>();
+            settings.ShowClock = visual.ShowClock;
+            settings.SmoothAnimations = visual.SmoothAnimations;
+            return settings;
+        }
+
+        private static List<CategoryConfig> CloneCategories(IEnumerable<CategoryConfig> categories)
+        {
+            return categories.Select(category => new CategoryConfig
+            {
+                Id = category.Id,
+                Name = category.Name,
+                ColumnLayouts = category.ColumnLayouts?.ToDictionary(
+                    layout => layout.Key,
+                    layout => layout.Value?.ToList() ?? new List<string>()) ?? new Dictionary<int, List<string>>(),
+                Tiles = category.Tiles?.Select(tile => CloneTileConfig(tile, null)).ToList() ?? new List<TileConfig>()
+            }).ToList();
+        }
+
+        private static TileConfig CloneTileConfig(TileConfig tile, Guid? parentId)
+        {
+            return new TileConfig
+            {
+                Id = tile.Id,
+                ParentId = parentId,
+                Type = tile.Type,
+                Name = tile.Name,
+                Path = tile.Path,
+                Icon = tile.Icon,
+                ColumnSpan = tile.ColumnSpan,
+                ShowLabel = tile.ShowLabel,
+                LabelPlacement = tile.LabelPlacement,
+                LabelAlignment = tile.LabelAlignment,
+                Children = tile.Children?.Select(child => CloneTileConfig(child, tile.Id)).ToList() ?? new List<TileConfig>()
+            };
         }
 
         private TileViewModel? LoadTileConfiguration(TileConfig config, Guid? parentId, HashSet<Guid> usedIds, int depth)
@@ -2608,12 +2708,13 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             _resizeSaveTimer.Start();
         }
 
-        private void SaveConfiguration()
+        private void SaveConfiguration(bool captureActiveLayoutProfile = true)
         {
             try
             {
                 Directory.CreateDirectory(_dataDir);
-                File.WriteAllText(_configPath, JsonSerializer.Serialize(CreateConfigurationSnapshot(), CreateWriteOptions()));
+                File.WriteAllText(_configPath, JsonSerializer.Serialize(
+                    CreateConfigurationSnapshot(captureActiveLayoutProfile), CreateWriteOptions()));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
             {
@@ -2622,25 +2723,190 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             }
         }
 
-        private AppConfig CreateConfigurationSnapshot()
+        private AppConfig CreateConfigurationSnapshot(bool captureActiveLayoutProfile = true)
         {
-            SaveActiveLayoutProfile();
             _design.WindowWidth = ActualWidth;
             _design.WindowHeight = ActualHeight;
+            List<CategoryConfig> categories = CreateCategorySnapshots();
+
+            if (captureActiveLayoutProfile)
+                UpdateActiveLayoutProfile(categories);
 
             return new AppConfig
             {
                 Settings = _design,
-                Categories = _categoryOrder.Select(categoryName => new CategoryConfig
-                {
-                    Id = _categoryIds.TryGetValue(categoryName, out Guid categoryId) ? categoryId : Guid.NewGuid(),
-                    Name = categoryName,
-                    Tiles = _categoriesMap[categoryName].Select(tile => CreateTileConfig(tile, null)).ToList(),
-                    ColumnLayouts = _categoryLayouts.TryGetValue(categoryName, out Dictionary<int, List<string>>? layouts)
-                        ? layouts.ToDictionary(profile => profile.Key, profile => profile.Value.ToList())
-                        : new Dictionary<int, List<string>>()
-                }).ToList()
+                Categories = CloneCategories(categories),
+                LayoutProfiles = _layoutProfiles,
+                ActiveLayoutProfileId = _activeLayoutProfileId
             };
+        }
+
+        private List<CategoryConfig> CreateCategorySnapshots()
+        {
+            SaveActiveLayoutProfile();
+            return _categoryOrder.Select(categoryName => new CategoryConfig
+            {
+                Id = _categoryIds.TryGetValue(categoryName, out Guid categoryId) ? categoryId : Guid.NewGuid(),
+                Name = categoryName,
+                Tiles = _categoriesMap[categoryName].Select(tile => CreateTileConfig(tile, null)).ToList(),
+                ColumnLayouts = _categoryLayouts.TryGetValue(categoryName, out Dictionary<int, List<string>>? layouts)
+                    ? layouts.ToDictionary(profile => profile.Key, profile => profile.Value.ToList())
+                    : new Dictionary<int, List<string>>()
+            }).ToList();
+        }
+
+        private void CaptureActiveLayoutProfile()
+        {
+            UpdateActiveLayoutProfile(CreateCategorySnapshots());
+        }
+
+        private void UpdateActiveLayoutProfile(List<CategoryConfig> categories)
+        {
+            LayoutProfileConfig? activeProfile = _layoutProfiles.FirstOrDefault(profile =>
+                profile.Id == _activeLayoutProfileId);
+            if (activeProfile == null)
+                return;
+
+            activeProfile.Categories = CloneCategories(categories);
+            activeProfile.VisualSettings = CreateLayoutVisualSettings(_design);
+        }
+
+        private void RefreshLayoutProfilesUI()
+        {
+            if (LayoutProfileComboBox == null)
+                return;
+
+            _isUpdatingLayoutProfiles = true;
+            try
+            {
+                LayoutProfileComboBox.ItemsSource = null;
+                LayoutProfileComboBox.ItemsSource = _layoutProfiles;
+                LayoutProfileComboBox.DisplayMemberPath = nameof(LayoutProfileConfig.Name);
+                LayoutProfileComboBox.SelectedValuePath = nameof(LayoutProfileConfig.Id);
+                LayoutProfileComboBox.SelectedValue = _activeLayoutProfileId;
+            }
+            finally
+            {
+                _isUpdatingLayoutProfiles = false;
+            }
+        }
+
+        private void LayoutProfileComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_isUpdatingLayoutProfiles || LayoutProfileComboBox.SelectedItem is not LayoutProfileConfig profile ||
+                profile.Id == _activeLayoutProfileId)
+                return;
+
+            ActivateLayoutProfile(profile.Id);
+        }
+
+        private void ActivateLayoutProfile(Guid profileId)
+        {
+            if (_activeLayoutProfileId == profileId)
+                return;
+
+            CaptureActiveLayoutProfile();
+            _activeLayoutProfileId = profileId;
+            SaveConfiguration(captureActiveLayoutProfile: false);
+            ReloadConfigurationAfterProfileChange();
+        }
+
+        private void ReloadConfigurationAfterProfileChange()
+        {
+            LoadConfiguration();
+            SyncSettingsUI();
+            UpdateBackgroundAnimations();
+            SaveConfiguration();
+        }
+
+        private void CreateLayoutProfile_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new RenameWindow(string.Empty, "Создать профиль раскладки", "Название профиля:")
+            {
+                Owner = this
+            };
+            if (dialog.ShowDialog() != true)
+                return;
+
+            string name = dialog.NewName.Trim();
+            if (_layoutProfiles.Any(profile => string.Equals(profile.Name, name, StringComparison.OrdinalIgnoreCase)))
+            {
+                MessageBox.Show("Профиль с таким названием уже существует.", "Профили раскладки",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            _layoutProfiles.Add(new LayoutProfileConfig
+            {
+                Name = name,
+                Categories = CreateCategorySnapshots(),
+                VisualSettings = CreateLayoutVisualSettings(_design)
+            });
+            ActivateLayoutProfile(_layoutProfiles[^1].Id);
+        }
+
+        private void RenameLayoutProfile_Click(object sender, RoutedEventArgs e)
+        {
+            LayoutProfileConfig? profile = _layoutProfiles.FirstOrDefault(item =>
+                item.Id == _activeLayoutProfileId);
+            if (profile == null)
+                return;
+
+            var dialog = new RenameWindow(profile.Name, "Переименовать профиль", "Название профиля:")
+            {
+                Owner = this
+            };
+            if (dialog.ShowDialog() != true)
+                return;
+
+            string name = dialog.NewName.Trim();
+            if (_layoutProfiles.Any(item => item.Id != profile.Id &&
+                string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase)))
+            {
+                MessageBox.Show("Профиль с таким названием уже существует.", "Профили раскладки",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            profile.Name = name;
+            RefreshLayoutProfilesUI();
+            SaveConfiguration();
+        }
+
+        private void DeleteLayoutProfile_Click(object sender, RoutedEventArgs e)
+        {
+            LayoutProfileConfig? profile = _layoutProfiles.FirstOrDefault(item =>
+                item.Id == _activeLayoutProfileId);
+            if (profile == null)
+                return;
+
+            if (_layoutProfiles.Count <= 1)
+            {
+                MessageBox.Show("Нельзя удалить единственный профиль раскладки.", "Профили раскладки",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            if (MessageBox.Show($"Удалить профиль «{profile.Name}»?", "Профили раскладки",
+                MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+                return;
+
+            bool deletingActiveProfile = profile.Id == _activeLayoutProfileId;
+            if (deletingActiveProfile)
+                CaptureActiveLayoutProfile();
+            _layoutProfiles.Remove(profile);
+
+            if (deletingActiveProfile)
+            {
+                _activeLayoutProfileId = _layoutProfiles[0].Id;
+                SaveConfiguration(captureActiveLayoutProfile: false);
+                ReloadConfigurationAfterProfileChange();
+            }
+            else
+            {
+                RefreshLayoutProfilesUI();
+                SaveConfiguration();
+            }
         }
 
         private static TileConfig CreateTileConfig(TileViewModel tile, Guid? parentId)
@@ -3345,6 +3611,14 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
                 return;
             }
 
+            EditTile(tile);
+        }
+
+        private bool EditTile(TileViewModel tile)
+        {
+            if (tile.IsInternalFolder)
+                return false;
+
             _suppressDeactivateHide = true;
             try
             {
@@ -3366,6 +3640,7 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
                     tile.IconSource = ResolveTileIcon(tile.Path, tile.CustomIconPath);
                     RefreshTileSearchIfActive();
                     SaveConfiguration();
+                    return true;
                 }
             }
             finally
@@ -3373,6 +3648,8 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
                 _suppressDeactivateHide = false;
                 this.Activate();
             }
+
+            return false;
         }
 
         private void PromptRenameTile(TileViewModel tile)
@@ -3604,6 +3881,57 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
                 status == "Путь не найден." ? MessageBoxImage.Warning : MessageBoxImage.Information);
         }
 
+        private void CheckMissingPaths_Click(object sender, RoutedEventArgs e)
+        {
+            List<TileViewModel> missingTiles = _categoryOrder
+                .Where(_categoriesMap.ContainsKey)
+                .SelectMany(category => EnumerateTiles(_categoriesMap[category]))
+                .Where(tile => !tile.IsInternalFolder &&
+                    GetTileAvailabilityDescription(tile.Path) == "Путь не найден.")
+                .ToList();
+
+            if (missingTiles.Count == 0)
+            {
+                MessageBox.Show("Все локальные пути в плитках доступны.", "Проверка путей",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            int repairedCount = 0;
+            foreach (TileViewModel tile in missingTiles)
+            {
+                MessageBoxResult choice = MessageBox.Show(
+                    $"Не найден путь плитки «{tile.Name}»:\n{tile.Path}\n\nОткрыть редактор, чтобы указать новое расположение?",
+                    "Обнаружен недоступный путь",
+                    MessageBoxButton.YesNoCancel,
+                    MessageBoxImage.Warning);
+                if (choice == MessageBoxResult.Cancel)
+                    break;
+                if (choice != MessageBoxResult.Yes)
+                    continue;
+
+                EditTile(tile);
+                if (File.Exists(tile.Path) || Directory.Exists(tile.Path))
+                    repairedCount++;
+            }
+
+            MessageBox.Show(
+                $"Проверено недоступных путей: {missingTiles.Count}.\nИсправлено: {repairedCount}.",
+                "Проверка путей завершена",
+                MessageBoxButton.OK,
+                repairedCount == missingTiles.Count ? MessageBoxImage.Information : MessageBoxImage.Warning);
+        }
+
+        private static IEnumerable<TileViewModel> EnumerateTiles(IEnumerable<TileViewModel> tiles)
+        {
+            foreach (TileViewModel tile in tiles)
+            {
+                yield return tile;
+                foreach (TileViewModel child in EnumerateTiles(tile.Children))
+                    yield return child;
+            }
+        }
+
         private static string GetTileAvailabilityDescription(string path)
         {
             if (File.Exists(path) || Directory.Exists(path))
@@ -3780,28 +4108,8 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
             if (config.Categories != null)
             {
                 foreach (CategoryConfig? category in config.Categories)
-                {
-                    if (category == null)
-                    {
-                        error = "В списке категорий обнаружена пустая запись.";
+                    if (!ValidateCategory(category, out error))
                         return false;
-                    }
-
-                    if (category.Tiles != null && category.Tiles.Any(tile => tile == null))
-                    {
-                        error = $"Категория «{category.Name}» содержит некорректную плитку.";
-                        return false;
-                    }
-
-                    foreach (TileConfig tile in category.Tiles ?? new List<TileConfig>())
-                    {
-                        if (!ValidateTile(tile, 0, out error))
-                            return false;
-                    }
-
-                    if (category.ColumnLayouts == null)
-                        category.ColumnLayouts = new Dictionary<int, List<string>>();
-                }
             }
 
             if (config.Categories == null || config.Categories.Count == 0)
@@ -3813,6 +4121,55 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
                 }
             }
 
+            var profileIds = new HashSet<Guid>();
+            var profileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (LayoutProfileConfig? profile in config.LayoutProfiles ?? new List<LayoutProfileConfig>())
+            {
+                if (profile == null || profile.Id == Guid.Empty || string.IsNullOrWhiteSpace(profile.Name) ||
+                    !profileIds.Add(profile.Id) || !profileNames.Add(profile.Name.Trim()))
+                {
+                    error = "Список профилей раскладки содержит пустое или повторяющееся значение.";
+                    return false;
+                }
+
+                if (profile.Categories == null || profile.Categories.Count == 0)
+                {
+                    error = $"Профиль «{profile.Name}» не содержит категорий.";
+                    return false;
+                }
+
+                foreach (CategoryConfig? category in profile.Categories)
+                    if (!ValidateCategory(category, out error))
+                        return false;
+
+                profile.VisualSettings ??= new LayoutVisualSettings();
+            }
+
+            error = string.Empty;
+            return true;
+        }
+
+        private static bool ValidateCategory(CategoryConfig? category, out string error)
+        {
+            if (category == null)
+            {
+                error = "В списке категорий обнаружена пустая запись.";
+                return false;
+            }
+
+            if (category.Tiles != null && category.Tiles.Any(tile => tile == null))
+            {
+                error = $"Категория «{category.Name}» содержит некорректную плитку.";
+                return false;
+            }
+
+            foreach (TileConfig tile in category.Tiles ?? new List<TileConfig>())
+            {
+                if (!ValidateTile(tile, 0, out error))
+                    return false;
+            }
+
+            category.ColumnLayouts ??= new Dictionary<int, List<string>>();
             error = string.Empty;
             return true;
         }
@@ -4034,6 +4391,117 @@ private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
                 int index = e.Key - Key.D1;
                 if (index < _categoryOrder.Count)
                     SelectCategory(_categoryOrder[index]);
+            }
+        }
+
+        private void TileButton_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (sender is not Button currentButton || currentButton.Tag is not TileViewModel)
+                return;
+
+            if (e.Key == Key.Enter)
+            {
+                Tile_Click(currentButton, new RoutedEventArgs());
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key is not (Key.Left or Key.Right or Key.Up or Key.Down))
+                return;
+
+            Point currentCenter = currentButton.TransformToAncestor(TilesContainer)
+                .Transform(new Point(currentButton.ActualWidth / 2, currentButton.ActualHeight / 2));
+            Button? nextButton = null;
+            double bestScore = double.MaxValue;
+
+            foreach (Button candidate in FindVisualChildren<Button>(TilesContainer))
+            {
+                if (ReferenceEquals(candidate, currentButton) || !candidate.IsVisible ||
+                    candidate.Tag is not TileViewModel)
+                    continue;
+
+                Point candidateCenter = candidate.TransformToAncestor(TilesContainer)
+                    .Transform(new Point(candidate.ActualWidth / 2, candidate.ActualHeight / 2));
+                double dx = candidateCenter.X - currentCenter.X;
+                double dy = candidateCenter.Y - currentCenter.Y;
+                double forwardDistance;
+                double perpendicularDistance;
+
+                switch (e.Key)
+                {
+                    case Key.Left when dx < 0:
+                        forwardDistance = -dx;
+                        perpendicularDistance = Math.Abs(dy);
+                        break;
+                    case Key.Right when dx > 0:
+                        forwardDistance = dx;
+                        perpendicularDistance = Math.Abs(dy);
+                        break;
+                    case Key.Up when dy < 0:
+                        forwardDistance = -dy;
+                        perpendicularDistance = Math.Abs(dx);
+                        break;
+                    case Key.Down when dy > 0:
+                        forwardDistance = dy;
+                        perpendicularDistance = Math.Abs(dx);
+                        break;
+                    default:
+                        continue;
+                }
+
+                double score = forwardDistance + perpendicularDistance * 2.5;
+                if (score < bestScore)
+                {
+                    bestScore = score;
+                    nextButton = candidate;
+                }
+            }
+
+            if (nextButton != null)
+            {
+                nextButton.BringIntoView();
+                nextButton.Focus();
+            }
+            e.Handled = true;
+        }
+
+        private void TileSearchTextBox_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key is Key.Up or Key.Down)
+            {
+                Button? firstTileButton = FindVisualChildren<Button>(TilesContainer)
+                    .FirstOrDefault(button => button.IsVisible && button.Tag is TileViewModel);
+                if (firstTileButton != null)
+                {
+                    firstTileButton.Focus();
+                    e.Handled = true;
+                }
+                return;
+            }
+
+            if (e.Key != Key.Enter || !_isGlobalSearchActive || _globalSearchResults.Count == 0)
+                return;
+
+            TileViewModel firstResult = _globalSearchResults[0];
+            if (firstResult.IsInternalFolder)
+                NavigateToSearchFolder(firstResult);
+            else if (LaunchItem(firstResult.Path) && _design.HideAfterLaunch)
+                AnimateAndHide();
+
+            e.Handled = true;
+        }
+
+        private static IEnumerable<T> FindVisualChildren<T>(DependencyObject parent) where T : DependencyObject
+        {
+            int childCount = VisualTreeHelper.GetChildrenCount(parent);
+            for (int index = 0; index < childCount; index++)
+            {
+                DependencyObject child = VisualTreeHelper.GetChild(parent, index);
+                if (child is T match)
+                    yield return match;
+
+                foreach (T descendant in FindVisualChildren<T>(child))
+                    yield return descendant;
             }
         }
 

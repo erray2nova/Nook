@@ -69,4 +69,4 @@ if ($LASTEXITCODE -ne 0) {
 
 Remove-Item -LiteralPath $publishDirectory -Recurse -Force
 
-Write-Host "Installer created: $outputDirectory\Nook-Setup-v1.0-x64.exe"
+Write-Host "Installer created: $outputDirectory\Nook-Setup-v1.1-x64.exe"

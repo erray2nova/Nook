@@ -11,9 +11,35 @@ namespace FastPush
     {
         public DesignSettings Settings { get; set; } = new();
         public List<CategoryConfig> Categories { get; set; } = new();
+        public List<LayoutProfileConfig> LayoutProfiles { get; set; } = new();
+        public Guid? ActiveLayoutProfileId { get; set; }
 
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public List<TileConfig>? Tiles { get; set; }
+    }
+
+    public class LayoutProfileConfig
+    {
+        public Guid Id { get; set; } = Guid.NewGuid();
+        public string Name { get; set; } = string.Empty;
+        public List<CategoryConfig> Categories { get; set; } = new();
+        public LayoutVisualSettings VisualSettings { get; set; } = new();
+    }
+
+    public class LayoutVisualSettings
+    {
+        public string Theme { get; set; } = "Black";
+        public string AccentColor { get; set; } = "#EC4899";
+        public int BlurOpacity { get; set; } = 72;
+        public double TileSize { get; set; } = 150;
+        public double TileSpacing { get; set; } = 14;
+        public int TileOpacity { get; set; } = 100;
+        public string GridPreset { get; set; } = "Standard";
+        public double WindowWidth { get; set; } = 1280;
+        public double WindowHeight { get; set; } = 720;
+        public List<string> BackgroundEffects { get; set; } = new();
+        public bool ShowClock { get; set; } = true;
+        public bool SmoothAnimations { get; set; } = true;
     }
 
     public class DesignSettings
